@@ -1,0 +1,15 @@
+[project]
+name = "screenpar"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "pillow>=10.4.0",
+    "pyautogui>=0.9.54",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.15.0",
+]
