@@ -1,7 +1,7 @@
 import pyautogui
 import tkinter as tk
-from tkinter import filedialog
-from PIL import Image, ImageDraw
+from tkinter import filedialog, ttk
+from PIL import Image, ImageDraw, ImageTk
 import threading
 import time
 from pynput import keyboard
@@ -46,6 +46,171 @@ class FullScreenSelector:
         root.mainloop()
         return self.record_region
 
+class ScreenshotCapture:
+    """Clase para capturar pantalla y guardar en PNG o JPEG."""
+    def __init__(self, region):
+        self.record_region = region
+        self.image = None
+        self.edit_window = None
+        self.drawing_canvas = None
+        self.start_x = None
+        self.start_y = None
+        self.rect = None
+        self.text_entries = []
+        self.current_color = "red"
+
+    def capture_and_save(self):
+        if not self.record_region:
+            print("⚠️ Zona de captura no definida")
+            return
+        
+        self.image = pyautogui.screenshot(region=self.record_region)
+        self.show_editor()
+
+    def show_editor(self):
+        self.edit_window = tk.Toplevel()
+        self.edit_window.title("Editor de Captura")
+        
+        img_width, img_height = self.image.size
+        
+        canvas_frame = tk.Frame(self.edit_window)
+        canvas_frame.pack(padx=10, pady=10)
+        
+        self.drawing_canvas = tk.Canvas(canvas_frame, width=img_width, height=img_height)
+        self.drawing_canvas.pack()
+        
+        self.photo = ImageTk.PhotoImage(self.image)
+        self.drawing_canvas.create_image(0, 0, anchor="nw", image=self.photo)
+        
+        self.drawing_canvas.bind("<ButtonPress-1>", self.start_draw)
+        self.drawing_canvas.bind("<B1-Motion>", self.drawing)
+        self.drawing_canvas.bind("<ButtonRelease-1>", self.end_draw)
+        
+        self.drawing_canvas.tag_bind("draggable", "<ButtonPress-1>", self.start_drag)
+        self.drawing_canvas.tag_bind("draggable", "<B1-Motion>", self.drag)
+        self.drawing_canvas.tag_bind("draggable>", "<ButtonRelease-1>", self.stop_drag)
+        
+        btn_frame = tk.Frame(self.edit_window)
+        btn_frame.pack(pady=10)
+        
+        color_frame = tk.Frame(btn_frame)
+        color_frame.pack(side="left", padx=5)
+        
+        tk.Label(color_frame, text="Color:").pack(side="left")
+        self.color_var = tk.StringVar(value="red")
+        color_combo = ttk.Combobox(color_frame, textvariable=self.color_var, values=["red", "blue", "green", "black", "yellow"], state="readonly", width=10)
+        color_combo.pack(side="left", padx=5)
+        color_combo.bind("<<ComboboxSelected>>", lambda e: setattr(self, 'current_color', self.color_var.get()))
+        
+        rect_btn = tk.Button(btn_frame, text="⬜ Dibujar Rectángulo", command=self.enable_rectangle_mode)
+        rect_btn.pack(side="left", padx=5)
+        
+        text_btn = tk.Button(btn_frame, text="📝 Agregar Texto", command=self.enable_text_mode)
+        text_btn.pack(side="left", padx=5)
+        
+        save_btn = tk.Button(btn_frame, text="💾 Guardar", command=self.save_image)
+        save_btn.pack(side="left", padx=5)
+        
+        self.mode = "rect"
+        self.rects = []
+        self.text_items = []
+        self.drag_data = {"x": 0, "y": 0, "item": None}
+
+    def enable_rectangle_mode(self):
+        self.mode = "rect"
+
+    def enable_text_mode(self):
+        self.mode = "text"
+
+    def start_draw(self, event):
+        self.start_x, self.start_y = event.x, event.y
+        if self.mode == "rect":
+            self.rect = self.drawing_canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline=self.current_color, width=3)
+        elif self.mode == "text":
+            self.show_text_input(event.x, event.y)
+
+    def drawing(self, event):
+        if self.mode == "rect" and self.rect:
+            self.drawing_canvas.coords(self.rect, self.start_x, self.start_y, event.x, event.y)
+
+    def end_draw(self, event):
+        if self.mode == "rect" and self.rect:
+            x1, y1, x2, y2 = self.start_x, self.start_y, event.x, event.y
+            self.rects.append((min(x1, x2), min(y1, y2), abs(x2-x1), abs(y2-y1), self.current_color))
+            self.rect = None
+
+    def start_drag(self, event):
+        item = self.drawing_canvas.find_closest(event.x, event.y)
+        if item:
+            self.drag_data["item"] = item[0]
+            self.drag_data["x"] = event.x
+            self.drag_data["y"] = event.y
+
+    def drag(self, event):
+        if self.drag_data["item"]:
+            dx = event.x - self.drag_data["x"]
+            dy = event.y - self.drag_data["y"]
+            self.drawing_canvas.move(self.drag_data["item"], dx, dy)
+            self.drag_data["x"] = event.x
+            self.drag_data["y"] = event.y
+
+    def stop_drag(self, event):
+        if self.drag_data["item"]:
+            coords = self.drawing_canvas.coords(self.drag_data["item"])
+            for i, (tx, ty, text, color, text_id) in enumerate(self.text_entries):
+                if text_id == self.drag_data["item"]:
+                    self.text_entries[i] = (coords[0], coords[1], text, color, text_id)
+                    break
+            self.drag_data["item"] = None
+
+    def show_text_input(self, x, y):
+        input_win = tk.Toplevel(self.edit_window)
+        input_win.title("Agregar Texto")
+        input_win.geometry("300x100")
+        input_win.transient(self.edit_window)
+        
+        tk.Label(input_win, text="Texto:").pack(pady=5)
+        text_entry = tk.Entry(input_win, width=40)
+        text_entry.pack(pady=5)
+        
+        def add_text():
+            text = text_entry.get()
+            if text:
+                text_id = self.drawing_canvas.create_text(x, y, text=text, fill=self.current_color, font=("Arial", 16, "bold"), tags="draggable")
+                self.text_entries.append((x, y, text, self.current_color, text_id))
+            input_win.destroy()
+        
+        tk.Button(input_win, text="Agregar", command=add_text).pack(pady=5)
+        text_entry.focus()
+
+    def save_image(self):
+        edit_img = self.image.copy()
+        draw = ImageDraw.Draw(edit_img)
+        
+        for rx, ry, rw, rh, color in self.rects:
+            draw.rectangle([rx, ry, rx + rw, ry + rh], outline=color, width=3)
+        
+        for tx, ty, text, color, text_id in self.text_entries:
+            draw.text((tx, ty), text, fill=color)
+        
+        file_path = filedialog.asksaveasfilename(
+            parent=self.edit_window,
+            defaultextension=".png",
+            filetypes=[
+                ("PNG files", "*.png"),
+                ("JPEG files", "*.jpg *.jpeg")
+            ]
+        )
+        
+        if file_path:
+            if file_path.lower().endswith(('.jpg', '.jpeg')):
+                rgb_image = edit_img.convert("RGB")
+                rgb_image.save(file_path, "JPEG", quality=95)
+            else:
+                edit_img.save(file_path, "PNG")
+            print(f"✅ Captura guardada en: {file_path}")
+            self.edit_window.destroy()
+
 class GifRecorder:
     """Clase para grabar GIF con cursor grande, semi-transparente y velocidad ajustable."""
     def __init__(self, region, duration=200):
@@ -53,7 +218,7 @@ class GifRecorder:
         self.frames = []
         self.recording = False
         self.thread = None
-        self.duration = duration  # duración de cada frame en ms
+        self.duration = duration
         self.keyboard_listener = None
         self.shift_pressed = False
         self.root = None
@@ -139,6 +304,13 @@ def main():
     recorder = GifRecorder(region)
     recorder.set_root(root)
 
+    screenshot_capture = ScreenshotCapture(region)
+
+    def take_screenshot():
+        root.withdraw()
+        root.after(500, screenshot_capture.capture_and_save)
+        root.after(1000, root.deiconify)
+
     def start():
         try:
             recorder.duration = int(duration_entry.get())
@@ -146,6 +318,9 @@ def main():
             recorder.duration = 200
         root.withdraw()
         root.after(2000, lambda: recorder.start_recording())
+
+    screenshot_btn = tk.Button(root, text="📷 Captura de Pantalla", command=take_screenshot)
+    screenshot_btn.pack(padx=10, pady=10)
 
     start_btn = tk.Button(root, text="🎥 Iniciar Grabación", command=start)
     start_btn.pack(padx=10, pady=10)
