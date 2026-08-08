@@ -1,7 +1,7 @@
 import pyautogui
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 import threading
 import time
 from pynput import keyboard, mouse
@@ -329,6 +329,22 @@ class GifRecorder:
         self.click_effect_until = 0
         self.cursor_style = "highlight"
         self.click_blink = True
+        self.show_typed_text = False
+        self.typed_text = ""
+        self.typed_text_until = 0
+        self.typed_text_lock = threading.Lock()
+        self.pressed_modifiers = set()
+        self.modifier_labels = {}
+        for key_name, label in (
+            ("ctrl_l", "Ctrl"), ("ctrl_r", "Ctrl"),
+            ("shift_l", "Shift"), ("shift_r", "Shift"),
+            ("alt_l", "Alt"), ("alt_r", "Alt"),
+            ("alt_gr", "AltGr"), ("cmd", "Win"),
+            ("cmd_l", "Win"), ("cmd_r", "Win")
+        ):
+            key_value = getattr(keyboard.Key, key_name, None)
+            if key_value is not None:
+                self.modifier_labels[key_value] = label
 
     def set_root(self, root):
         self.root = root
@@ -337,9 +353,10 @@ class GifRecorder:
         self.status_callback = status_callback
         self.finished_callback = finished_callback
 
-    def set_cursor_options(self, style="highlight", click_blink=True):
+    def set_cursor_options(self, style="highlight", click_blink=True, show_typed_text=False):
         self.cursor_style = style
         self.click_blink = click_blink
+        self.show_typed_text = show_typed_text
 
     def notify(self, message):
         if self.status_callback:
@@ -349,14 +366,80 @@ class GifRecorder:
                 self.status_callback(message)
 
     def on_key_press(self, key):
-        if key == keyboard.Key.shift_l or key == keyboard.Key.shift_r:
-            self.shift_pressed = True
+        modifier = self.modifier_labels.get(key)
+        if modifier:
+            self.pressed_modifiers.add(modifier)
+            if modifier == "Shift":
+                self.shift_pressed = True
         elif key == keyboard.Key.print_screen and self.shift_pressed:
             self.stop_recording()
+        elif self.show_typed_text:
+            self.update_typed_text(key)
 
     def on_key_release(self, key):
-        if key == keyboard.Key.shift_l or key == keyboard.Key.shift_r:
-            self.shift_pressed = False
+        modifier = self.modifier_labels.get(key)
+        if modifier:
+            self.pressed_modifiers.discard(modifier)
+            if modifier == "Shift":
+                self.shift_pressed = False
+
+    def key_label(self, key):
+        char = getattr(key, "char", None)
+        if char and char.isprintable():
+            return char
+
+        virtual_key = getattr(key, "vk", None)
+        if virtual_key is not None:
+            if 65 <= virtual_key <= 90:
+                return chr(virtual_key)
+            if 48 <= virtual_key <= 57:
+                return chr(virtual_key)
+            if 112 <= virtual_key <= 123:
+                return f"F{virtual_key - 111}"
+
+        special_labels = {
+            keyboard.Key.f1: "F1", keyboard.Key.f2: "F2",
+            keyboard.Key.f3: "F3", keyboard.Key.f4: "F4",
+            keyboard.Key.f5: "F5", keyboard.Key.f6: "F6",
+            keyboard.Key.f7: "F7", keyboard.Key.f8: "F8",
+            keyboard.Key.f9: "F9", keyboard.Key.f10: "F10",
+            keyboard.Key.f11: "F11", keyboard.Key.f12: "F12",
+            keyboard.Key.esc: "Esc", keyboard.Key.home: "Home",
+            keyboard.Key.end: "End", keyboard.Key.page_up: "PageUp",
+            keyboard.Key.page_down: "PageDown", keyboard.Key.insert: "Insert",
+            keyboard.Key.up: "Up", keyboard.Key.down: "Down",
+            keyboard.Key.left: "Left", keyboard.Key.right: "Right",
+            keyboard.Key.caps_lock: "CapsLock"
+        }
+        return special_labels.get(key)
+
+    def update_typed_text(self, key):
+        with self.typed_text_lock:
+            token = None
+            if self.pressed_modifiers:
+                key_name = self.key_label(key)
+                if key_name:
+                    if len(key_name) == 1 and key_name.isalpha():
+                        key_name = key_name.upper()
+                    modifier_order = ["Ctrl", "Alt", "AltGr", "Shift", "Win"]
+                    modifiers = [name for name in modifier_order if name in self.pressed_modifiers]
+                    token = " + ".join(modifiers + [key_name])
+            elif key == keyboard.Key.space:
+                token = "Space"
+            elif key == keyboard.Key.enter:
+                token = "Enter"
+            elif key == keyboard.Key.tab:
+                token = "Tab"
+            elif key == keyboard.Key.backspace:
+                token = "Backspace"
+            elif key == keyboard.Key.delete:
+                token = "Delete"
+            else:
+                token = self.key_label(key)
+
+            if token:
+                self.typed_text = token
+                self.typed_text_until = time.monotonic() + 1
 
     def on_mouse_click(self, x, y, button, pressed):
         if not pressed or not self.click_blink or not self.record_region:
@@ -392,18 +475,7 @@ class GifRecorder:
             draw.polygon(points, fill=(255, 255, 255, 235))
             draw.line(points + [points[0]], fill=(0, 0, 0, 255), width=2)
         elif self.cursor_style == "hand":
-            points = [
-                (cursor_x + 8, cursor_y), (cursor_x + 12, cursor_y),
-                (cursor_x + 12, cursor_y + 13), (cursor_x + 16, cursor_y + 10),
-                (cursor_x + 20, cursor_y + 13), (cursor_x + 16, cursor_y + 20),
-                (cursor_x + 14, cursor_y + 25), (cursor_x + 8, cursor_y + 27),
-                (cursor_x + 3, cursor_y + 25), (cursor_x, cursor_y + 20),
-                (cursor_x, cursor_y + 14), (cursor_x + 4, cursor_y + 13),
-                (cursor_x + 5, cursor_y + 18), (cursor_x + 5, cursor_y + 5),
-                (cursor_x + 8, cursor_y + 5)
-            ]
-            draw.polygon(points, fill=(255, 255, 255, 235))
-            draw.line(points + [points[0]], fill=(0, 0, 0, 255), width=2)
+            self.draw_hand_cursor(draw, cursor_x, cursor_y)
         else:
             radius = 15
             draw.ellipse(
@@ -421,6 +493,69 @@ class GifRecorder:
                      cursor_x + pulse_radius, cursor_y + pulse_radius),
                     outline=(255, 220, 0, 240), width=4
                 )
+
+        self.draw_typed_text(draw, cursor_x, cursor_y, overlay.size)
+
+    def draw_hand_cursor(self, draw, cursor_x, cursor_y):
+        points = [
+            (cursor_x + 11, cursor_y), (cursor_x + 17, cursor_y),
+            (cursor_x + 18, cursor_y + 2), (cursor_x + 18, cursor_y + 19),
+            (cursor_x + 21, cursor_y + 16), (cursor_x + 24, cursor_y + 16),
+            (cursor_x + 26, cursor_y + 18), (cursor_x + 26, cursor_y + 22),
+            (cursor_x + 29, cursor_y + 19), (cursor_x + 32, cursor_y + 20),
+            (cursor_x + 33, cursor_y + 23), (cursor_x + 32, cursor_y + 26),
+            (cursor_x + 35, cursor_y + 24), (cursor_x + 38, cursor_y + 26),
+            (cursor_x + 38, cursor_y + 29), (cursor_x + 34, cursor_y + 35),
+            (cursor_x + 29, cursor_y + 40), (cursor_x + 23, cursor_y + 43),
+            (cursor_x + 16, cursor_y + 43), (cursor_x + 10, cursor_y + 40),
+            (cursor_x + 5, cursor_y + 35), (cursor_x + 1, cursor_y + 29),
+            (cursor_x, cursor_y + 25), (cursor_x + 2, cursor_y + 22),
+            (cursor_x + 5, cursor_y + 22), (cursor_x + 11, cursor_y + 27),
+            (cursor_x + 11, cursor_y + 5)
+        ]
+        shadow = [(x + 2, y + 3) for x, y in points]
+        draw.polygon(shadow, fill=(15, 23, 42, 110))
+        draw.line(shadow + [shadow[0]], fill=(15, 23, 42, 180), width=3)
+        draw.polygon(points, fill=(248, 250, 252, 245))
+        draw.line(points + [points[0]], fill=(15, 23, 42, 255), width=2)
+        draw.line(
+            [(cursor_x + 12, cursor_y + 28), (cursor_x + 18, cursor_y + 35),
+             (cursor_x + 27, cursor_y + 35)],
+            fill=(37, 99, 235, 180), width=2
+        )
+
+    def draw_typed_text(self, draw, cursor_x, cursor_y, image_size):
+        if not self.show_typed_text:
+            return
+        with self.typed_text_lock:
+            if time.monotonic() >= self.typed_text_until:
+                return
+            text = self.typed_text
+        if not text:
+            return
+
+        font = ImageFont.load_default(size=18)
+        text = text[-40:]
+        text_bbox = draw.multiline_textbbox((0, 0), text, font=font, spacing=2)
+        padding = 5
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
+        text_x = cursor_x + 25
+        text_y = cursor_y + 25
+        if text_x + text_width + padding * 2 > image_size[0]:
+            text_x = max(padding, cursor_x - text_width - 25)
+        if text_y + text_height + padding * 2 > image_size[1]:
+            text_y = max(padding, cursor_y - text_height - 25)
+
+        draw.rounded_rectangle(
+            (text_x, text_y, text_x + text_width + padding * 2,
+             text_y + text_height + padding * 2),
+            radius=4, fill=(0, 0, 0, 200)
+        )
+        draw.multiline_text(
+            (text_x + padding, text_y + padding), text,
+            font=font, fill=(255, 255, 255, 255), spacing=2
+        )
 
     def record_screen(self):
         try:
@@ -448,6 +583,10 @@ class GifRecorder:
         if self.recording:
             return False
         self.frames = []
+        with self.typed_text_lock:
+            self.typed_text = ""
+            self.typed_text_until = 0
+        self.pressed_modifiers.clear()
         self.recording = True
         self.keyboard_listener = keyboard.Listener(on_press=self.on_key_press, on_release=self.on_key_release)
         self.keyboard_listener.start()
@@ -486,7 +625,44 @@ class GifRecorder:
 def main():
     root = tk.Tk()
     root.title("ScreenPar")
+    root.geometry("500x720")
     root.resizable(False, False)
+
+    colors = {
+        "canvas": "#f1f5f9",
+        "surface": "#ffffff",
+        "navy": "#0f172a",
+        "blue": "#2563eb",
+        "blue_active": "#1d4ed8",
+        "red": "#dc2626",
+        "red_active": "#b91c1c",
+        "text": "#1e293b",
+        "muted": "#64748b",
+        "border": "#dbe3ee",
+        "status": "#eff6ff"
+    }
+    root.configure(background=colors["canvas"])
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure("App.TFrame", background=colors["canvas"])
+    style.configure("Header.TFrame", background=colors["navy"])
+    style.configure("Brand.TLabel", background=colors["navy"], foreground="white", font=("Arial", 22, "bold"))
+    style.configure("Eyebrow.TLabel", background=colors["navy"], foreground="#93c5fd", font=("Arial", 9, "bold"))
+    style.configure("HeaderSub.TLabel", background=colors["navy"], foreground="#cbd5e1", font=("Arial", 10))
+    style.configure("Card.TLabelframe", background=colors["surface"], bordercolor=colors["border"], relief="solid", borderwidth=1)
+    style.configure("Card.TLabelframe.Label", background=colors["surface"], foreground=colors["navy"], font=("Arial", 10, "bold"))
+    style.configure("Card.TLabel", background=colors["surface"], foreground=colors["text"], font=("Arial", 10))
+    style.configure("Muted.TLabel", background=colors["surface"], foreground=colors["muted"], font=("Arial", 9))
+    style.configure("Card.TCheckbutton", background=colors["surface"], foreground=colors["text"], font=("Arial", 10))
+    style.configure("Status.TFrame", background=colors["status"])
+    style.configure("Status.TLabel", background=colors["status"], foreground=colors["text"], font=("Arial", 10))
+    style.configure("StatusMuted.TLabel", background=colors["status"], foreground=colors["muted"], font=("Arial", 9))
+    style.configure("Primary.TButton", background=colors["blue"], foreground="white", padding=(14, 10), font=("Arial", 10, "bold"), borderwidth=0)
+    style.map("Primary.TButton", background=[("active", colors["blue_active"]), ("disabled", "#cbd5e1")], foreground=[("disabled", "#64748b")])
+    style.configure("Secondary.TButton", background=colors["surface"], foreground=colors["text"], padding=(14, 9), font=("Arial", 10), borderwidth=1)
+    style.map("Secondary.TButton", background=[("active", "#f8fafc"), ("disabled", "#e2e8f0")], foreground=[("disabled", "#94a3b8")])
+    style.configure("Danger.TButton", background=colors["red"], foreground="white", padding=(14, 9), font=("Arial", 10, "bold"), borderwidth=0)
+    style.map("Danger.TButton", background=[("active", colors["red_active"]), ("disabled", "#cbd5e1")], foreground=[("disabled", "#64748b")])
 
     recorder = GifRecorder(None)
     recorder.set_root(root)
@@ -500,26 +676,27 @@ def main():
 
     region_var.set("No definida. Se solicitará al iniciar una grabación.")
 
-    header = ttk.Frame(root, padding=(18, 16, 18, 8))
+    header = ttk.Frame(root, style="Header.TFrame", padding=(28, 20, 28, 20))
     header.pack(fill="x")
-    ttk.Label(header, text="ScreenPar", font=("Arial", 18, "bold")).pack(anchor="w")
-    ttk.Label(header, text="Captura y grabación de una zona de tu pantalla").pack(anchor="w", pady=(2, 0))
+    ttk.Label(header, text="SCREEN CAPTURE TOOL", style="Eyebrow.TLabel").pack(anchor="w")
+    ttk.Label(header, text="ScreenPar", style="Brand.TLabel").pack(anchor="w", pady=(3, 0))
+    ttk.Label(header, text="Captura imágenes y crea GIFs de forma sencilla", style="HeaderSub.TLabel").pack(anchor="w", pady=(3, 0))
 
-    region_frame = ttk.LabelFrame(root, text="Zona de grabación", padding=10)
-    region_frame.pack(fill="x", padx=18, pady=(4, 10))
-    ttk.Label(region_frame, textvariable=region_var).pack(side="left", fill="x", expand=True)
+    region_frame = ttk.LabelFrame(root, text="Zona de grabación", style="Card.TLabelframe", padding=12)
+    region_frame.pack(fill="x", padx=24, pady=(16, 10))
+    ttk.Label(region_frame, textvariable=region_var, style="Card.TLabel", wraplength=420).pack(side="left", fill="x", expand=True)
 
-    controls = ttk.Frame(root, padding=(18, 0, 18, 8))
-    controls.pack(fill="x")
-    ttk.Label(controls, text="Intervalo del GIF (ms por imagen):").grid(row=0, column=0, sticky="w")
+    controls = ttk.LabelFrame(root, text="Configuración del GIF", style="Card.TLabelframe", padding=12)
+    controls.pack(fill="x", padx=24, pady=(0, 10))
+    ttk.Label(controls, text="Intervalo entre imágenes (ms):", style="Card.TLabel").grid(row=0, column=0, sticky="w")
     duration_entry = ttk.Spinbox(controls, from_=50, to=2000, increment=10, width=8)
     duration_entry.set("200")
     duration_entry.grid(row=0, column=1, padx=(10, 0), sticky="w")
-    ttk.Label(controls, text="Menor valor = más fluidez", foreground="#666666").grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 0))
+    ttk.Label(controls, text="Menor valor = más fluidez", style="Muted.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
-    cursor_frame = ttk.LabelFrame(root, text="Cursor en el GIF", padding=10)
-    cursor_frame.pack(fill="x", padx=18, pady=(0, 8))
-    ttk.Label(cursor_frame, text="Mostrar como:").grid(row=0, column=0, sticky="w")
+    cursor_frame = ttk.LabelFrame(root, text="Cursor y teclado", style="Card.TLabelframe", padding=12)
+    cursor_frame.pack(fill="x", padx=24, pady=(0, 10))
+    ttk.Label(cursor_frame, text="Mostrar cursor como:", style="Card.TLabel").grid(row=0, column=0, sticky="w")
     cursor_style_var = tk.StringVar(value="Resaltado")
     cursor_combo = ttk.Combobox(
         cursor_frame,
@@ -533,34 +710,43 @@ def main():
     click_check = ttk.Checkbutton(
         cursor_frame,
         text="Parpadear al hacer clic",
-        variable=click_blink_var
+        variable=click_blink_var,
+        style="Card.TCheckbutton"
     )
     click_check.grid(row=1, column=0, columnspan=2, sticky="w", pady=(7, 0))
+    show_typed_text_var = tk.BooleanVar(value=True)
+    show_typed_text_check = ttk.Checkbutton(
+        cursor_frame,
+        text="Mostrar teclas junto al cursor",
+        variable=show_typed_text_var,
+        style="Card.TCheckbutton"
+    )
+    show_typed_text_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
-    action_frame = ttk.Frame(root, padding=(18, 4, 18, 8))
-    action_frame.pack(fill="x")
+    action_frame = ttk.LabelFrame(root, text="Acciones", style="Card.TLabelframe", padding=12)
+    action_frame.pack(fill="x", padx=24, pady=(0, 10))
 
     screenshot_capture = ScreenshotCapture(None, parent=root)
 
-    screenshot_btn = ttk.Button(action_frame, text="Capturar imagen", command=lambda: take_screenshot())
+    screenshot_btn = ttk.Button(action_frame, text="Capturar imagen", style="Primary.TButton", command=lambda: take_screenshot())
     screenshot_btn.grid(row=0, column=0, sticky="ew", pady=3)
-    start_btn = ttk.Button(action_frame, text="Iniciar grabación", command=lambda: start())
+    start_btn = ttk.Button(action_frame, text="Iniciar grabación GIF", style="Secondary.TButton", command=lambda: start())
     start_btn.grid(row=1, column=0, sticky="ew", pady=3)
-    stop_btn = ttk.Button(action_frame, text="Detener y guardar GIF", command=lambda: recorder.stop_recording())
+    stop_btn = ttk.Button(action_frame, text="Detener y guardar GIF", style="Danger.TButton", command=lambda: recorder.stop_recording())
     stop_btn.grid(row=2, column=0, sticky="ew", pady=3)
-    region_btn = ttk.Button(action_frame, text="Definir zona de grabación", command=lambda: choose_region())
+    region_btn = ttk.Button(action_frame, text="Definir zona de grabación", style="Secondary.TButton", command=lambda: choose_region())
     region_btn.grid(row=3, column=0, sticky="ew", pady=3)
     action_frame.columnconfigure(0, weight=1)
 
-    status_frame = ttk.Frame(root, padding=(18, 0, 18, 12))
-    status_frame.pack(fill="x")
-    ttk.Separator(status_frame).pack(fill="x", pady=(0, 8))
-    ttk.Label(status_frame, textvariable=status_var, wraplength=360).pack(anchor="w")
-    ttk.Label(status_frame, text="Atajo: Shift + PrintScreen para detener una grabación", foreground="#666666", wraplength=360).pack(anchor="w", pady=(5, 0))
+    status_frame = ttk.Frame(root, style="Status.TFrame", padding=(14, 11))
+    status_frame.pack(fill="x", padx=24, pady=(0, 10))
+    ttk.Label(status_frame, text="ESTADO", style="StatusMuted.TLabel").pack(anchor="w")
+    ttk.Label(status_frame, textvariable=status_var, style="Status.TLabel", wraplength=420).pack(anchor="w", pady=(3, 0))
+    ttk.Label(status_frame, text="Atajo de grabación: Shift + PrintScreen", style="StatusMuted.TLabel", wraplength=420).pack(anchor="w", pady=(5, 0))
 
-    footer = ttk.Frame(root, padding=(18, 0, 18, 16))
+    footer = ttk.Frame(root, style="App.TFrame", padding=(24, 0, 24, 18))
     footer.pack(fill="x")
-    quit_btn = ttk.Button(footer, text="Salir", command=root.destroy)
+    quit_btn = ttk.Button(footer, text="Salir", style="Secondary.TButton", command=lambda: close_app())
     quit_btn.pack(side="right")
 
     def set_status(message):
@@ -574,6 +760,7 @@ def main():
         duration_entry.configure(state="disabled" if recording else "normal")
         cursor_combo.configure(state="disabled" if recording else "readonly")
         click_check.configure(state="disabled" if recording else "normal")
+        show_typed_text_check.configure(state="disabled" if recording else "normal")
 
     def finish_recording(frames):
         set_recording_state(False)
@@ -670,7 +857,8 @@ def main():
         }
         recorder.set_cursor_options(
             cursor_styles[cursor_style_var.get()],
-            click_blink_var.get()
+            click_blink_var.get(),
+            show_typed_text_var.get()
         )
         set_recording_state(True)
         set_status("La grabación comenzará en 2 segundos. Mueve el cursor a la zona deseada.")
@@ -683,6 +871,10 @@ def main():
 
     root.protocol("WM_DELETE_WINDOW", close_app)
     set_recording_state(False)
+    root.update_idletasks()
+    screen_x = (root.winfo_screenwidth() - root.winfo_width()) // 2
+    screen_y = (root.winfo_screenheight() - root.winfo_height()) // 2
+    root.geometry(f"{root.winfo_width()}x{root.winfo_height()}+{screen_x}+{screen_y}")
     root.mainloop()
 
 if __name__ == "__main__":
