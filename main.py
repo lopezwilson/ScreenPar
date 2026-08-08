@@ -64,6 +64,225 @@ class FullScreenSelector:
         root.wait_window()
         return self.record_region
 
+
+class WindowSelector:
+    """Permite elegir una ventana visible de Windows como zona de captura."""
+    def select_by_click(self, parent=None, on_selected=None):
+        if sys.platform != "win32":
+            messagebox.showinfo(
+                "Función no disponible",
+                "La selección de ventanas está disponible en Windows.",
+                parent=parent
+            )
+            if on_selected:
+                on_selected(None)
+            return
+
+        class Point(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        class Rect(ctypes.Structure):
+            _fields_ = [
+                ("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)
+            ]
+
+        user32 = ctypes.windll.user32
+        user32.WindowFromPoint.argtypes = [Point]
+        user32.WindowFromPoint.restype = ctypes.c_void_p
+        user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        user32.GetAncestor.restype = ctypes.c_void_p
+        user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(Rect)]
+        user32.GetWindowRect.restype = ctypes.c_bool
+        user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        user32.IsWindowVisible.restype = ctypes.c_bool
+        user32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        user32.GetWindowTextW.restype = ctypes.c_int
+
+        selected = {"region": None}
+        selection_done = threading.Event()
+        clicked_point = {"value": None}
+        parent_id = parent.winfo_id() if parent else None
+        # La capa debe ser independiente del menú, que permanece oculto durante la selección.
+        highlight = tk.Toplevel()
+        highlight.overrideredirect(True)
+        highlight.attributes("-topmost", True)
+        highlight.attributes("-alpha", 0.22)
+        highlight.configure(background="#dc2626")
+        highlight.update_idletasks()
+
+        def window_at_point(x, y):
+            hwnd = user32.WindowFromPoint(Point(x, y))
+            hwnd = user32.GetAncestor(hwnd, 2) if hwnd else None
+            if not hwnd or hwnd == parent_id or not user32.IsWindowVisible(hwnd):
+                return None
+            title_length = user32.GetWindowTextLengthW(hwnd)
+            if title_length == 0:
+                return None
+            window_rect = Rect()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(window_rect)):
+                return None
+            width = window_rect.right - window_rect.left
+            height = window_rect.bottom - window_rect.top
+            if width <= 20 or height <= 20:
+                return None
+            return (window_rect.left, window_rect.top, width, height)
+
+        def on_click(x, y, _button, pressed):
+            if not pressed:
+                return
+            clicked_point["value"] = (x, y)
+
+        listener = mouse.Listener(on_click=on_click)
+        listener.start()
+
+        def finish_selection():
+            listener.stop()
+            listener.join()
+            if highlight.winfo_exists():
+                highlight.destroy()
+            if on_selected:
+                on_selected(selected["region"])
+
+        def update_highlight():
+            if selection_done.is_set():
+                finish_selection()
+                return
+
+            click = clicked_point["value"]
+            if click:
+                highlight.withdraw()
+                selected["region"] = window_at_point(*click)
+                selection_done.set()
+                finish_selection()
+                return
+
+            # WindowFromPoint debe ejecutarse sin el overlay visible; de lo
+            # contrario Windows puede devolver la propia capa de resaltado.
+            highlight.withdraw()
+            x, y = pyautogui.position()
+            region = window_at_point(x, y)
+            if region:
+                left, top, width, height = region
+                highlight.geometry(f"{width}x{height}{left:+d}{top:+d}")
+                highlight.deiconify()
+                highlight.update_idletasks()
+                highlight.lift()
+            parent.after(40, update_highlight)
+
+        update_highlight()
+
+    def select(self, parent=None):
+        if sys.platform != "win32":
+            messagebox.showinfo(
+                "Función no disponible",
+                "La selección de ventanas está disponible en Windows.",
+                parent=parent
+            )
+            return None
+
+        class Rect(ctypes.Structure):
+            _fields_ = [
+                ("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)
+            ]
+
+        user32 = ctypes.windll.user32
+        user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        user32.IsWindowVisible.restype = ctypes.c_bool
+        user32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(Rect)]
+        user32.GetWindowRect.restype = ctypes.c_bool
+
+        windows = []
+        parent_id = parent.winfo_id() if parent else None
+
+        enum_windows_callback = ctypes.WINFUNCTYPE(
+            ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p
+        )
+
+        @enum_windows_callback
+        def enum_callback(hwnd, _lparam):
+            if hwnd == parent_id or not user32.IsWindowVisible(hwnd):
+                return True
+            title_length = user32.GetWindowTextLengthW(hwnd)
+            if title_length == 0:
+                return True
+            title_buffer = ctypes.create_unicode_buffer(title_length + 1)
+            user32.GetWindowTextW(hwnd, title_buffer, title_length + 1)
+            window_rect = Rect()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(window_rect)):
+                return True
+            width = window_rect.right - window_rect.left
+            height = window_rect.bottom - window_rect.top
+            if width > 20 and height > 20:
+                windows.append((title_buffer.value, hwnd, window_rect.left,
+                                window_rect.top, width, height))
+            return True
+
+        user32.EnumWindows.argtypes = [enum_windows_callback, ctypes.c_void_p]
+        user32.EnumWindows.restype = ctypes.c_bool
+        user32.EnumWindows(enum_callback, None)
+        windows.sort(key=lambda window: window[0].lower())
+
+        dialog = tk.Toplevel(parent) if parent else tk.Tk()
+        dialog.title("Seleccionar ventana")
+        dialog.geometry("560x420")
+        dialog.minsize(420, 300)
+        if parent:
+            dialog.transient(parent)
+        result = {"region": None}
+
+        ttk.Label(
+            dialog,
+            text="Elegí una ventana para capturar su área completa.",
+            padding=(16, 14, 16, 8)
+        ).pack(fill="x")
+        list_frame = ttk.Frame(dialog, padding=(16, 0, 16, 8))
+        list_frame.pack(fill="both", expand=True)
+        window_list = tk.Listbox(list_frame, activestyle="dotbox", selectmode="browse")
+        list_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=window_list.yview)
+        window_list.configure(yscrollcommand=list_scroll.set)
+        window_list.grid(row=0, column=0, sticky="nsew")
+        list_scroll.grid(row=0, column=1, sticky="ns")
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.columnconfigure(0, weight=1)
+
+        for title, _hwnd, _left, _top, width, height in windows:
+            window_list.insert("end", f"{title}  ({width} x {height})")
+        if not windows:
+            window_list.insert("end", "No se encontraron ventanas visibles")
+            window_list.configure(state="disabled")
+
+        def confirm(event=None):
+            selection = window_list.curselection()
+            if not selection:
+                return
+            _, _hwnd, left, top, width, height = windows[selection[0]]
+            result["region"] = (left, top, width, height)
+            dialog.destroy()
+
+        def cancel(event=None):
+            dialog.destroy()
+
+        action_frame = ttk.Frame(dialog, padding=(16, 0, 16, 14))
+        action_frame.pack(fill="x")
+        ttk.Button(action_frame, text="Cancelar", command=cancel).pack(side="right")
+        ttk.Button(action_frame, text="Usar ventana", command=confirm).pack(side="right", padx=(0, 8))
+        window_list.bind("<Double-Button-1>", confirm)
+        dialog.bind("<Return>", confirm)
+        dialog.bind("<Escape>", cancel)
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        dialog.grab_set()
+        dialog.focus_force()
+        dialog.wait_window()
+        return result["region"]
+
 class ScreenshotCapture:
     """Clase para capturar pantalla y guardar en PNG o JPEG."""
     def __init__(self, region, parent=None, on_closed=None):
@@ -102,6 +321,15 @@ class ScreenshotCapture:
                 self.on_closed(False)
             return False
 
+    def reset_annotations(self):
+        self.rect = None
+        self.rects = []
+        self.text_entries = []
+        self.arrows = []
+        self.ellipses = []
+        self.annotation_items = {}
+        self.selected_annotation = None
+
     def save_direct_image(self):
         if self.parent:
             self.parent.deiconify()
@@ -139,6 +367,9 @@ class ScreenshotCapture:
             self.on_closed(True)
 
     def show_editor(self):
+        if self.edit_window and self.edit_window.winfo_exists():
+            self.edit_window.destroy()
+        self.reset_annotations()
         self.edit_window = tk.Toplevel(self.parent)
         self.edit_window.title("Editor de Captura")
         editor_colors = {
@@ -288,12 +519,6 @@ class ScreenshotCapture:
         self.drawing_canvas.tag_bind("draggable", "<ButtonRelease-1>", self.stop_drag)
         
         self.mode = "rect"
-        self.rects = []
-        self.ellipses = []
-        self.arrows = []
-        self.text_items = []
-        self.annotation_items = {}
-        self.selected_annotation = None
         self.drag_data = {"x": 0, "y": 0, "item": None}
         self.enable_rectangle_mode()
         self.edit_window.bind("<Control-s>", lambda event: self.save_image())
@@ -1085,14 +1310,17 @@ def main():
     screenshot_capture = ScreenshotCapture(None, parent=root)
 
     screenshot_btn = ttk.Button(action_frame, text="Capturar imagen", style="Primary.TButton", command=lambda: take_screenshot())
-    screenshot_btn.grid(row=0, column=0, sticky="ew", pady=3)
+    screenshot_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=3)
     start_btn = ttk.Button(action_frame, text="Iniciar grabación GIF", style="Secondary.TButton", command=lambda: start())
-    start_btn.grid(row=1, column=0, sticky="ew", pady=3)
+    start_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0), pady=3)
     stop_btn = ttk.Button(action_frame, text="Detener y guardar GIF", style="Danger.TButton", command=lambda: recorder.stop_recording())
-    stop_btn.grid(row=2, column=0, sticky="ew", pady=3)
+    stop_btn.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=3)
     region_btn = ttk.Button(action_frame, text="Definir zona de grabación", style="Secondary.TButton", command=lambda: choose_region())
-    region_btn.grid(row=3, column=0, sticky="ew", pady=3)
+    region_btn.grid(row=1, column=1, sticky="ew", padx=(4, 0), pady=3)
+    window_btn = ttk.Button(action_frame, text="Seleccionar ventana con mouse", style="Secondary.TButton", command=lambda: choose_window_by_click())
+    window_btn.grid(row=2, column=0, columnspan=2, sticky="ew", pady=3)
     action_frame.columnconfigure(0, weight=1)
+    action_frame.columnconfigure(1, weight=1)
 
     status_frame = ttk.Frame(root, style="Status.TFrame", padding=(14, 11))
     status_frame.pack(fill="x", padx=24, pady=(0, 10))
@@ -1113,6 +1341,7 @@ def main():
         start_btn.configure(state="disabled" if recording else "normal")
         stop_btn.configure(state="normal" if recording else "disabled")
         region_btn.configure(state="disabled" if recording else "normal")
+        window_btn.configure(state="disabled" if recording else "normal")
         duration_entry.configure(state="disabled" if recording else "normal")
         click_check.configure(state="disabled" if recording else "normal")
         show_typed_text_check.configure(state="disabled" if recording else "normal")
@@ -1144,6 +1373,38 @@ def main():
             set_status("No se pudo guardar la grabación.")
 
     recorder.set_callbacks(set_status, finish_recording)
+
+    def choose_window():
+        selected_region = WindowSelector().select(root)
+        root.lift()
+        if selected_region:
+            recorder.record_region = selected_region
+            screenshot_capture.record_region = selected_region
+            region_var.set(format_region(selected_region))
+            set_status("Ventana seleccionada. Ya puedes capturar o grabar.")
+        else:
+            set_status("Selección de ventana cancelada. Se conserva la zona anterior.")
+
+    def choose_window_by_click():
+        messagebox.showinfo(
+            "Seleccionar ventana",
+            "Después de cerrar este aviso, hacé clic sobre la ventana que querés capturar.",
+            parent=root
+        )
+        root.withdraw()
+
+        def window_selected(selected_region):
+            root.deiconify()
+            root.lift()
+            if selected_region:
+                recorder.record_region = selected_region
+                screenshot_capture.record_region = selected_region
+                region_var.set(format_region(selected_region))
+                set_status("Ventana seleccionada. Ya puedes capturar o grabar.")
+            else:
+                set_status("No se pudo seleccionar una ventana. Se conserva la zona anterior.")
+
+        WindowSelector().select_by_click(root, window_selected)
 
     def choose_region(show_main=True):
         root.withdraw()

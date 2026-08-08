@@ -12,8 +12,9 @@ ScreenPar permite capturar una zona de la pantalla como imagen o grabarla como G
 6. Hacé clic en una anotación para moverla; usa `Editar texto` o `Eliminar` para modificarla.
 7. Si la imagen es grande, usa las barras de desplazamiento del editor para recorrerla.
 8. Usa `Maximizar` en el editor si necesitas trabajar a pantalla completa.
-9. Para un GIF, detén con el botón o con `Shift + PrintScreen`.
-10. Cambia el intervalo del GIF si necesitas más fluidez o archivos más pequeños.
+9. Usa `Seleccionar ventana con mouse`, cerrá el aviso y mové el cursor: la ventana bajo el mouse se resaltará; hacé clic para elegirla.
+10. Para un GIF, detén con el botón o con `Shift + PrintScreen`.
+11. Cambia el intervalo del GIF si necesitas más fluidez o archivos más pequeños.
 
 El GIF usa el cursor predeterminado del sistema, incluyendo sus cursores personalizados y cambios de forma (por ejemplo, la mano sobre un enlace). También puedes activar o desactivar el parpadeo al hacer clic y mostrar opcionalmente el texto que escribes junto al cursor.
 
