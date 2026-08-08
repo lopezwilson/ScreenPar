@@ -7,9 +7,13 @@ ScreenPar permite capturar una zona de la pantalla como imagen o grabarla como G
 1. Ejecuta `main.py`.
 2. Elige `Capturar imagen` o `Iniciar grabación`.
 3. Arrastra sobre la pantalla para seleccionar la zona. Pulsa `Esc` para cancelar.
-4. Para una captura, escribe directamente el nombre del archivo.
-5. Para un GIF, detén con el botón o con `Shift + PrintScreen`.
-6. Cambia el intervalo del GIF si necesitas más fluidez o archivos más pequeños.
+4. Para una captura, usa el editor para agregar recuadros, círculos, flechas o texto antes de guardarla.
+5. Elegí el tamaño de fuente entre `8` y `72` antes de agregar texto; también podés aplicarlo a un texto seleccionado.
+6. Hacé clic en una anotación para moverla; usa `Editar texto` o `Eliminar` para modificarla.
+7. Si la imagen es grande, usa las barras de desplazamiento del editor para recorrerla.
+8. Usa `Maximizar` en el editor si necesitas trabajar a pantalla completa.
+9. Para un GIF, detén con el botón o con `Shift + PrintScreen`.
+10. Cambia el intervalo del GIF si necesitas más fluidez o archivos más pequeños.
 
 El GIF usa el cursor predeterminado del sistema, incluyendo sus cursores personalizados y cambios de forma (por ejemplo, la mano sobre un enlace). También puedes activar o desactivar el parpadeo al hacer clic y mostrar opcionalmente el texto que escribes junto al cursor.
 
