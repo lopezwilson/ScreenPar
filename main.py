@@ -4,6 +4,8 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 import threading
 import time
+import ctypes
+import sys
 from pynput import keyboard, mouse
 
 class FullScreenSelector:
@@ -310,7 +312,7 @@ class ScreenshotCapture:
             self.close_editor(saved=True)
 
 class GifRecorder:
-    """Clase para grabar GIF con cursor grande, semi-transparente y velocidad ajustable."""
+    """Clase para grabar GIF usando el cursor configurado en el sistema."""
     def __init__(self, region, duration=200):
         self.record_region = region
         self.frames = []
@@ -327,9 +329,12 @@ class GifRecorder:
         self.click_lock = threading.Lock()
         self.click_started = 0
         self.click_effect_until = 0
-        self.cursor_style = "highlight"
         self.click_blink = True
         self.show_typed_text = False
+        self.typed_text_duration = 1000
+        self.cursor_cache_handle = None
+        self.cursor_cache_image = None
+        self.cursor_cache_hotspot = (0, 0)
         self.typed_text = ""
         self.typed_text_until = 0
         self.typed_text_lock = threading.Lock()
@@ -353,10 +358,10 @@ class GifRecorder:
         self.status_callback = status_callback
         self.finished_callback = finished_callback
 
-    def set_cursor_options(self, style="highlight", click_blink=True, show_typed_text=False):
-        self.cursor_style = style
+    def set_cursor_options(self, click_blink=True, show_typed_text=False, typed_text_duration=1000):
         self.click_blink = click_blink
         self.show_typed_text = show_typed_text
+        self.typed_text_duration = typed_text_duration
 
     def notify(self, message):
         if self.status_callback:
@@ -439,7 +444,7 @@ class GifRecorder:
 
             if token:
                 self.typed_text = token
-                self.typed_text_until = time.monotonic() + 1
+                self.typed_text_until = time.monotonic() + self.typed_text_duration / 1000
 
     def on_mouse_click(self, x, y, button, pressed):
         if not pressed or not self.click_blink or not self.record_region:
@@ -461,28 +466,29 @@ class GifRecorder:
         return elapsed
 
     def draw_cursor(self, overlay, x, y, left, top):
+        try:
+            system_cursor = self.get_system_cursor()
+        except Exception:
+            system_cursor = None
+        if system_cursor:
+            cursor_image, x, y, hotspot_x, hotspot_y = system_cursor
+            overlay.paste(
+                cursor_image,
+                (x - left - hotspot_x, y - top - hotspot_y),
+                cursor_image
+            )
+        else:
+            # Fallback para sistemas que no exponen un cursor como imagen.
+            draw = ImageDraw.Draw(overlay)
+            cursor_x, cursor_y = x - left, y - top
+            draw.ellipse(
+                (cursor_x - 12, cursor_y - 12, cursor_x + 12, cursor_y + 12),
+                fill=(255, 0, 0, 150)
+            )
+
         draw = ImageDraw.Draw(overlay)
         cursor_x, cursor_y = x - left, y - top
         click_elapsed = self.click_effect()
-
-        if self.cursor_style == "arrow":
-            points = [
-                (cursor_x, cursor_y), (cursor_x, cursor_y + 29),
-                (cursor_x + 8, cursor_y + 21), (cursor_x + 15, cursor_y + 34),
-                (cursor_x + 21, cursor_y + 31), (cursor_x + 14, cursor_y + 18),
-                (cursor_x + 27, cursor_y + 18)
-            ]
-            draw.polygon(points, fill=(255, 255, 255, 235))
-            draw.line(points + [points[0]], fill=(0, 0, 0, 255), width=2)
-        elif self.cursor_style == "hand":
-            self.draw_hand_cursor(draw, cursor_x, cursor_y)
-        else:
-            radius = 15
-            draw.ellipse(
-                (cursor_x - radius, cursor_y - radius,
-                 cursor_x + radius, cursor_y + radius),
-                fill=(255, 0, 0, 150)
-            )
 
         if click_elapsed is not None:
             blink_on = int(click_elapsed / 0.1) % 2 == 0
@@ -496,33 +502,118 @@ class GifRecorder:
 
         self.draw_typed_text(draw, cursor_x, cursor_y, overlay.size)
 
-    def draw_hand_cursor(self, draw, cursor_x, cursor_y):
-        points = [
-            (cursor_x + 11, cursor_y), (cursor_x + 17, cursor_y),
-            (cursor_x + 18, cursor_y + 2), (cursor_x + 18, cursor_y + 19),
-            (cursor_x + 21, cursor_y + 16), (cursor_x + 24, cursor_y + 16),
-            (cursor_x + 26, cursor_y + 18), (cursor_x + 26, cursor_y + 22),
-            (cursor_x + 29, cursor_y + 19), (cursor_x + 32, cursor_y + 20),
-            (cursor_x + 33, cursor_y + 23), (cursor_x + 32, cursor_y + 26),
-            (cursor_x + 35, cursor_y + 24), (cursor_x + 38, cursor_y + 26),
-            (cursor_x + 38, cursor_y + 29), (cursor_x + 34, cursor_y + 35),
-            (cursor_x + 29, cursor_y + 40), (cursor_x + 23, cursor_y + 43),
-            (cursor_x + 16, cursor_y + 43), (cursor_x + 10, cursor_y + 40),
-            (cursor_x + 5, cursor_y + 35), (cursor_x + 1, cursor_y + 29),
-            (cursor_x, cursor_y + 25), (cursor_x + 2, cursor_y + 22),
-            (cursor_x + 5, cursor_y + 22), (cursor_x + 11, cursor_y + 27),
-            (cursor_x + 11, cursor_y + 5)
+    def get_system_cursor(self):
+        """Obtiene el cursor visible de Windows junto con su punto activo."""
+        if sys.platform != "win32":
+            return None
+
+        class Point(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        class CursorInfo(ctypes.Structure):
+            _fields_ = [
+                ("size", ctypes.c_uint), ("flags", ctypes.c_uint),
+                ("cursor", ctypes.c_void_p), ("position", Point)
+            ]
+
+        class IconInfo(ctypes.Structure):
+            _fields_ = [
+                ("fIcon", ctypes.c_int), ("xHotspot", ctypes.c_uint),
+                ("yHotspot", ctypes.c_uint), ("hbmMask", ctypes.c_void_p),
+                ("hbmColor", ctypes.c_void_p)
+            ]
+
+        class BitmapInfoHeader(ctypes.Structure):
+            _fields_ = [
+                ("size", ctypes.c_uint), ("width", ctypes.c_long),
+                ("height", ctypes.c_long), ("planes", ctypes.c_ushort),
+                ("bit_count", ctypes.c_ushort), ("compression", ctypes.c_uint),
+                ("image_size", ctypes.c_uint), ("x_pixels_per_meter", ctypes.c_long),
+                ("y_pixels_per_meter", ctypes.c_long), ("colors_used", ctypes.c_uint),
+                ("colors_important", ctypes.c_uint)
+            ]
+
+        class BitmapInfo(ctypes.Structure):
+            _fields_ = [("header", BitmapInfoHeader), ("colors", ctypes.c_uint * 3)]
+
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        user32.GetCursorInfo.argtypes = [ctypes.POINTER(CursorInfo)]
+        user32.GetCursorInfo.restype = ctypes.c_bool
+        user32.GetIconInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(IconInfo)]
+        user32.GetIconInfo.restype = ctypes.c_bool
+        user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+        user32.GetSystemMetrics.restype = ctypes.c_int
+        user32.DrawIconEx.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint
         ]
-        shadow = [(x + 2, y + 3) for x, y in points]
-        draw.polygon(shadow, fill=(15, 23, 42, 110))
-        draw.line(shadow + [shadow[0]], fill=(15, 23, 42, 180), width=3)
-        draw.polygon(points, fill=(248, 250, 252, 245))
-        draw.line(points + [points[0]], fill=(15, 23, 42, 255), width=2)
-        draw.line(
-            [(cursor_x + 12, cursor_y + 28), (cursor_x + 18, cursor_y + 35),
-             (cursor_x + 27, cursor_y + 35)],
-            fill=(37, 99, 235, 180), width=2
+        user32.DrawIconEx.restype = ctypes.c_bool
+        gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+        gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
+        gdi32.CreateDIBSection.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(BitmapInfo), ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_uint
+        ]
+        gdi32.CreateDIBSection.restype = ctypes.c_void_p
+        gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        gdi32.SelectObject.restype = ctypes.c_void_p
+        gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+        gdi32.DeleteObject.restype = ctypes.c_bool
+        gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+        gdi32.DeleteDC.restype = ctypes.c_bool
+        cursor_info = CursorInfo(ctypes.sizeof(CursorInfo))
+        if not user32.GetCursorInfo(ctypes.byref(cursor_info)) or not cursor_info.cursor:
+            return None
+
+        if cursor_info.cursor == self.cursor_cache_handle and self.cursor_cache_image:
+            hotspot_x, hotspot_y = self.cursor_cache_hotspot
+            return (self.cursor_cache_image, cursor_info.position.x,
+                    cursor_info.position.y, hotspot_x, hotspot_y)
+
+        icon_info = IconInfo()
+        if not user32.GetIconInfo(cursor_info.cursor, ctypes.byref(icon_info)):
+            return None
+
+        width = user32.GetSystemMetrics(13) or 32
+        height = user32.GetSystemMetrics(14) or 32
+        bitmap_info = BitmapInfo()
+        bitmap_info.header = BitmapInfoHeader(
+            ctypes.sizeof(BitmapInfoHeader), width, -height, 1, 32, 0,
+            width * height * 4, 0, 0, 0, 0
         )
+        bits = ctypes.c_void_p()
+        device_context = gdi32.CreateCompatibleDC(None)
+        bitmap = gdi32.CreateDIBSection(
+            device_context, ctypes.byref(bitmap_info), 0,
+            ctypes.byref(bits), None, 0
+        )
+        if not device_context or not bitmap or not bits:
+            if icon_info.hbmMask:
+                gdi32.DeleteObject(icon_info.hbmMask)
+            if icon_info.hbmColor:
+                gdi32.DeleteObject(icon_info.hbmColor)
+            return None
+
+        previous_bitmap = gdi32.SelectObject(device_context, bitmap)
+        try:
+            if not user32.DrawIconEx(device_context, 0, 0, cursor_info.cursor,
+                                     width, height, 0, None, 3):
+                return None
+            raw = ctypes.string_at(bits, width * height * 4)
+            image = Image.frombuffer("RGBA", (width, height), raw, "raw", "BGRA", 0, 1).copy()
+            self.cursor_cache_handle = cursor_info.cursor
+            self.cursor_cache_image = image
+            self.cursor_cache_hotspot = (icon_info.xHotspot, icon_info.yHotspot)
+            return image, cursor_info.position.x, cursor_info.position.y, icon_info.xHotspot, icon_info.yHotspot
+        finally:
+            gdi32.SelectObject(device_context, previous_bitmap)
+            gdi32.DeleteObject(bitmap)
+            gdi32.DeleteDC(device_context)
+            if icon_info.hbmMask:
+                gdi32.DeleteObject(icon_info.hbmMask)
+            if icon_info.hbmColor:
+                gdi32.DeleteObject(icon_info.hbmColor)
 
     def draw_typed_text(self, draw, cursor_x, cursor_y, image_size):
         if not self.show_typed_text:
@@ -572,8 +663,8 @@ class GifRecorder:
                 img = Image.alpha_composite(img, overlay)
                 self.frames.append(img.convert("RGB"))
                 time.sleep(max(self.duration, 50) / 1000)
-        except Exception:
-            self.notify("La grabación se detuvo por un error de captura.")
+        except Exception as error:
+            self.notify(f"La grabación se detuvo por un error de captura: {error}")
             self.stop_recording()
 
     def start_recording(self):
@@ -696,16 +787,9 @@ def main():
 
     cursor_frame = ttk.LabelFrame(root, text="Cursor y teclado", style="Card.TLabelframe", padding=12)
     cursor_frame.pack(fill="x", padx=24, pady=(0, 10))
-    ttk.Label(cursor_frame, text="Mostrar cursor como:", style="Card.TLabel").grid(row=0, column=0, sticky="w")
-    cursor_style_var = tk.StringVar(value="Resaltado")
-    cursor_combo = ttk.Combobox(
-        cursor_frame,
-        textvariable=cursor_style_var,
-        values=["Resaltado", "Mano", "Flecha"],
-        state="readonly",
-        width=12
+    ttk.Label(cursor_frame, text="Se usa el cursor predeterminado del sistema.", style="Card.TLabel").grid(
+        row=0, column=0, columnspan=2, sticky="w"
     )
-    cursor_combo.grid(row=0, column=1, padx=(10, 0), sticky="w")
     click_blink_var = tk.BooleanVar(value=True)
     click_check = ttk.Checkbutton(
         cursor_frame,
@@ -722,6 +806,14 @@ def main():
         style="Card.TCheckbutton"
     )
     show_typed_text_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+    ttk.Label(cursor_frame, text="Mostrar teclas durante (ms):", style="Card.TLabel").grid(
+        row=3, column=0, sticky="w", pady=(7, 0)
+    )
+    typed_text_duration_entry = ttk.Spinbox(
+        cursor_frame, from_=100, to=5000, increment=100, width=8
+    )
+    typed_text_duration_entry.set("1000")
+    typed_text_duration_entry.grid(row=3, column=1, padx=(10, 0), sticky="w", pady=(7, 0))
 
     action_frame = ttk.LabelFrame(root, text="Acciones", style="Card.TLabelframe", padding=12)
     action_frame.pack(fill="x", padx=24, pady=(0, 10))
@@ -758,9 +850,9 @@ def main():
         stop_btn.configure(state="normal" if recording else "disabled")
         region_btn.configure(state="disabled" if recording else "normal")
         duration_entry.configure(state="disabled" if recording else "normal")
-        cursor_combo.configure(state="disabled" if recording else "readonly")
         click_check.configure(state="disabled" if recording else "normal")
         show_typed_text_check.configure(state="disabled" if recording else "normal")
+        typed_text_duration_entry.configure(state="disabled" if recording else "normal")
 
     def finish_recording(frames):
         set_recording_state(False)
@@ -789,11 +881,12 @@ def main():
 
     recorder.set_callbacks(set_status, finish_recording)
 
-    def choose_region():
+    def choose_region(show_main=True):
         root.withdraw()
         selected_region = FullScreenSelector().select(root)
-        root.deiconify()
-        root.lift()
+        if show_main:
+            root.deiconify()
+            root.lift()
         if selected_region:
             recorder.record_region = selected_region
             screenshot_capture.record_region = selected_region
@@ -846,19 +939,27 @@ def main():
             duration_entry.focus_set()
             return
 
-        if not recorder.record_region and not choose_region():
+        try:
+            typed_text_duration = int(typed_text_duration_entry.get())
+            if not 100 <= typed_text_duration <= 5000:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror(
+                "Duración no válida",
+                "Usa un valor entre 100 y 5000 milisegundos.",
+                parent=root
+            )
+            typed_text_duration_entry.focus_set()
+            return
+
+        if not recorder.record_region and not choose_region(show_main=False):
             return
 
         recorder.duration = duration
-        cursor_styles = {
-            "Resaltado": "highlight",
-            "Mano": "hand",
-            "Flecha": "arrow"
-        }
         recorder.set_cursor_options(
-            cursor_styles[cursor_style_var.get()],
             click_blink_var.get(),
-            show_typed_text_var.get()
+            show_typed_text_var.get(),
+            typed_text_duration
         )
         set_recording_state(True)
         set_status("La grabación comenzará en 2 segundos. Mueve el cursor a la zona deseada.")
