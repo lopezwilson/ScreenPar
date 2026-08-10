@@ -1,6 +1,6 @@
 import pyautogui
 import tkinter as tk
-from tkinter import colorchooser, filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
 from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageTk
 import threading
 import time
@@ -8,6 +8,8 @@ import ctypes
 import sys
 import math
 import io
+import json
+import os
 from pynput import keyboard, mouse
 
 class FullScreenSelector:
@@ -307,6 +309,8 @@ class ScreenshotCapture:
         self.selected_annotation = None
         self.display_scale = 1.0
         self.tool_icons = []
+        self.resize_handles = {}
+        self.resize_data = None
 
     def capture_and_save(self):
         if self.capture_image():
@@ -376,6 +380,8 @@ class ScreenshotCapture:
         self.ellipses = []
         self.annotation_items = {}
         self.selected_annotation = None
+        self.resize_handles = {}
+        self.resize_data = None
 
     def save_direct_image(self):
         if self.parent:
@@ -449,6 +455,7 @@ class ScreenshotCapture:
         editor_style.configure("Editor.TCombobox", fieldbackground=editor_colors["surface"], background=editor_colors["surface"], foreground=editor_colors["navy"], arrowcolor=editor_colors["navy"])
         editor_style.configure("Editor.TSpinbox", fieldbackground=editor_colors["surface"], background=editor_colors["surface"], foreground=editor_colors["navy"], arrowcolor=editor_colors["navy"])
         editor_style.configure("Editor.TCheckbutton", background=editor_colors["surface"], foreground=editor_colors["navy"], font=("Arial", 9))
+        editor_style.configure("Editor.Vertical.TScrollbar", background="#4b5561", troughcolor=editor_colors["background"], arrowcolor=editor_colors["navy"])
         self.edit_window.configure(background=editor_colors["background"])
         self.edit_window.protocol("WM_DELETE_WINDOW", self.close_editor)
         
@@ -461,7 +468,7 @@ class ScreenshotCapture:
         display_width = max(1, round(img_width * self.display_scale))
         display_height = max(1, round(img_height * self.display_scale))
         window_width = min(screen_width - 40, viewport_width + 58)
-        window_height = min(screen_height - 60, viewport_height + 280)
+        window_height = min(screen_height - 60, viewport_height + 330)
         window_x = max(0, (screen_width - window_width) // 2)
         window_y = max(0, (screen_height - window_height) // 2)
         self.edit_window.geometry(f"{window_width}x{window_height}+{window_x}+{window_y}")
@@ -487,12 +494,40 @@ class ScreenshotCapture:
         workspace = ttk.Frame(self.edit_window, style="Editor.TFrame")
         workspace.pack(fill="both", expand=True, padx=18, pady=(0, 14))
 
-        btn_frame = ttk.Frame(workspace, style="Editor.Toolbar.TFrame", padding=(12, 10), width=190)
+        btn_frame = ttk.Frame(workspace, style="Editor.Toolbar.TFrame", width=205)
         btn_frame.pack(side="left", fill="y", padx=(0, 10))
         btn_frame.pack_propagate(False)
-        ttk.Label(btn_frame, text="HERRAMIENTAS", style="Editor.Toolbar.TLabel").pack(anchor="w", pady=(0, 10))
+        self.toolbar_canvas = tk.Canvas(
+            btn_frame, bg=editor_colors["surface"], highlightthickness=0
+        )
+        self.toolbar_canvas.pack(side="left", fill="both", expand=True)
+        self.toolbar_scroll = ttk.Scrollbar(
+            btn_frame, orient="vertical", command=self.toolbar_canvas.yview,
+            style="Editor.Vertical.TScrollbar"
+        )
+        self.toolbar_scroll.pack(side="right", fill="y")
+        self.toolbar_canvas.configure(yscrollcommand=self.toolbar_scroll.set)
+        self.toolbar_content = ttk.Frame(self.toolbar_canvas, style="Editor.Toolbar.TFrame", padding=(12, 10))
+        self.toolbar_window_id = self.toolbar_canvas.create_window(
+            (0, 0), window=self.toolbar_content, anchor="nw"
+        )
+        self.toolbar_content.bind(
+            "<Configure>",
+            lambda event: self.toolbar_canvas.configure(scrollregion=self.toolbar_canvas.bbox("all"))
+        )
+        self.toolbar_canvas.bind(
+            "<Configure>",
+            lambda event: self.toolbar_canvas.itemconfigure(self.toolbar_window_id, width=event.width)
+        )
+        self.toolbar_content.bind(
+            "<Enter>", lambda event: self.toolbar_canvas.bind_all("<MouseWheel>", self._scroll_toolbar)
+        )
+        self.toolbar_content.bind(
+            "<Leave>", lambda event: self.toolbar_canvas.unbind_all("<MouseWheel>")
+        )
+        ttk.Label(self.toolbar_content, text="HERRAMIENTAS", style="Editor.Toolbar.TLabel").pack(anchor="w", pady=(0, 10))
         
-        color_frame = ttk.Frame(btn_frame, style="Editor.Toolbar.TFrame")
+        color_frame = ttk.Frame(self.toolbar_content, style="Editor.Toolbar.TFrame")
         color_frame.pack(fill="x", pady=(0, 6))
         
         ttk.Label(color_frame, text="COLOR DE ANOTACIÓN", style="Editor.Toolbar.TLabel").pack(anchor="w")
@@ -512,7 +547,7 @@ class ScreenshotCapture:
         font_size_combo.bind("<FocusOut>", lambda event: self.apply_font_size())
         self.fill_rect_var = tk.BooleanVar(value=self.fill_rectangles)
         ttk.Checkbutton(
-            color_frame, text="Rellenar rectángulos",
+            color_frame, text="Rellenar formas (rect./círculo)",
             variable=self.fill_rect_var, style="Editor.TCheckbutton",
             command=lambda: setattr(self, "fill_rectangles", self.fill_rect_var.get())
         ).pack(anchor="w", pady=(10, 0))
@@ -531,7 +566,7 @@ class ScreenshotCapture:
             style="Editor.Toolbar.TLabel", width=4, anchor="e"
         ).pack(side="right", padx=(6, 0))
         
-        tools_frame = ttk.Frame(btn_frame, style="Editor.Toolbar.TFrame")
+        tools_frame = ttk.Frame(self.toolbar_content, style="Editor.Toolbar.TFrame")
         tools_frame.pack(fill="x")
 
         rect_btn = self.create_tool_button(tools_frame, "Rectángulo", "rectangle", self.enable_rectangle_mode)
@@ -557,8 +592,20 @@ class ScreenshotCapture:
         save_btn = self.create_tool_button(tools_frame, "Guardar", "save", self.save_image, "Editor.Save.TButton")
         save_btn.pack(fill="x", pady=2)
 
+        ttk.Label(self.toolbar_content, text="PLANTILLAS", style="Editor.Toolbar.TLabel").pack(anchor="w", pady=(16, 6))
+        new_template_btn = self.create_tool_button(self.toolbar_content, "Nueva plantilla", "template", self.save_new_template)
+        new_template_btn.pack(fill="x")
+        self.template_tiles_frame = ttk.Frame(self.toolbar_content, style="Editor.Toolbar.TFrame")
+        self.template_tiles_frame.pack(fill="x", pady=(6, 0))
+
         self.mode_var = tk.StringVar()
-        ttk.Label(btn_frame, textvariable=self.mode_var, anchor="w", wraplength=160, style="Editor.Status.TLabel").pack(fill="x", pady=(12, 0))
+        ttk.Label(self.toolbar_content, textvariable=self.mode_var, anchor="w", wraplength=160, style="Editor.Status.TLabel").pack(fill="x", pady=(12, 0))
+        self.templates = self.load_templates()
+        self._template_ghost = None
+        self._template_drag = None
+        self._template_photos = []
+        self.pending_template = None
+        self.refresh_template_panel()
 
         canvas_frame = ttk.Frame(workspace, style="Editor.Toolbar.TFrame", padding=8)
         canvas_frame.pack(side="left", fill="both", expand=True)
@@ -599,6 +646,8 @@ class ScreenshotCapture:
         self.drag_data = {"x": 0, "y": 0, "item": None}
         self.enable_rectangle_mode()
         self.edit_window.bind("<Control-s>", lambda event: self.save_image())
+        self.edit_window.bind_all("<Delete>", lambda event: self.delete_selected())
+        self.edit_window.bind_all("<BackSpace>", lambda event: self.delete_selected())
 
     def create_tool_button(self, parent, text, icon_name, command, style="Editor.Tool.TButton"):
         icon = Image.new("RGBA", (20, 20), (0, 0, 0, 0))
@@ -638,6 +687,11 @@ class ScreenshotCapture:
             draw.rectangle((3, 3, 17, 17), outline="white", width=2)
             draw.rectangle((6, 4, 14, 9), outline="white", width=1)
             draw.rectangle((7, 12, 13, 16), outline="white", width=1)
+        elif icon_name == "template":
+            draw.rectangle((4, 3, 16, 17), outline="#93c5fd", width=2)
+            draw.line((7, 6, 13, 6), fill="#93c5fd", width=2)
+            draw.line((7, 10, 13, 10), fill="#93c5fd", width=2)
+            draw.line((7, 14, 13, 14), fill="#93c5fd", width=2)
 
         image = ImageTk.PhotoImage(icon)
         self.tool_icons.append(image)
@@ -645,6 +699,7 @@ class ScreenshotCapture:
 
     def enable_rectangle_mode(self):
         self.mode = "rect"
+        self.pending_template = None
         if hasattr(self, "mode_var"):
             self.mode_var.set("Herramienta activa: rectángulo. Arrastra sobre la imagen.")
 
@@ -719,25 +774,34 @@ class ScreenshotCapture:
             kind, index = self.annotation_items[item]
             if kind == "texto" and hasattr(self, "font_size_var"):
                 self.font_size_var.set(str(self.text_entries[index][5]))
-            self.mode_var.set(f"Seleccionado: {kind}. Puedes moverlo o eliminarlo.")
+            self.show_resize_handles(item)
+            self.mode_var.set(f"Seleccionado: {kind}. Movelo para arrastrarlo o usá las manijas para redimensionarlo.")
 
     def enable_text_mode(self):
         self.mode = "text"
+        self.pending_template = None
         if hasattr(self, "mode_var"):
             self.mode_var.set("Herramienta activa: texto. Haz clic en la imagen.")
 
     def enable_ellipse_mode(self):
         self.mode = "ellipse"
+        self.pending_template = None
         if hasattr(self, "mode_var"):
             self.mode_var.set("Herramienta activa: círculo. Arrastra sobre la imagen.")
 
     def enable_arrow_mode(self):
         self.mode = "arrow"
+        self.pending_template = None
         if hasattr(self, "mode_var"):
             self.mode_var.set("Herramienta activa: flecha. Arrastra desde el origen hasta el destino.")
 
     def canvas_position(self, event):
         return self.drawing_canvas.canvasx(event.x), self.drawing_canvas.canvasy(event.y)
+
+    def _scroll_toolbar(self, event):
+        if hasattr(self, "toolbar_canvas"):
+            direction = -1 if event.delta > 0 else 1
+            self.toolbar_canvas.yview_scroll(direction, "units")
 
     def image_position(self, x, y):
         return x / self.display_scale, y / self.display_scale
@@ -745,9 +809,28 @@ class ScreenshotCapture:
     def display_position(self, x, y):
         return x * self.display_scale, y * self.display_scale
 
+    def fill_stipple(self, transparency):
+        """Tramado aproximado del relleno según la transparencia (solo vista previa)."""
+        if transparency >= 75:
+            return "gray12"
+        if transparency >= 50:
+            return "gray25"
+        if transparency >= 25:
+            return "gray50"
+        return "gray75"
+
     def start_draw(self, event):
         canvas_x, canvas_y = self.canvas_position(event)
         current_item = self.drawing_canvas.find_withtag("current")
+        if current_item and current_item[0] in self.resize_handles:
+            self._start_resize(current_item[0], canvas_x, canvas_y)
+            return
+        if self.pending_template is not None:
+            template = self.pending_template
+            self.pending_template = None
+            image_x, image_y = self.image_position(canvas_x, canvas_y)
+            self.place_template(template, image_x, image_y)
+            return
         if current_item and current_item[0] in self.annotation_items:
             self.select_annotation(current_item[0])
             self.drag_data["item"] = current_item[0]
@@ -755,6 +838,8 @@ class ScreenshotCapture:
             self.drag_data["y"] = canvas_y
             return
 
+        self.clear_resize_handles()
+        self.selected_annotation = None
         self.start_x, self.start_y = canvas_x, canvas_y
         if self.mode == "rect":
             rectangle_options = {
@@ -763,18 +848,23 @@ class ScreenshotCapture:
                 "tags": ("annotation",)
             }
             if self.fill_rectangles:
-                stipple = "gray12" if self.rectangle_transparency >= 75 else "gray25"
-                if self.rectangle_transparency < 50:
-                    stipple = "gray50"
-                if self.rectangle_transparency < 25:
-                    stipple = "gray75"
-                rectangle_options.update(fill=self.current_color, stipple=stipple)
+                rectangle_options.update(fill=self.current_color, stipple=self.fill_stipple(self.rectangle_transparency))
             self.rect = self.drawing_canvas.create_rectangle(
                 self.start_x, self.start_y, self.start_x, self.start_y,
                 **rectangle_options
             )
         elif self.mode == "ellipse":
-            self.rect = self.drawing_canvas.create_oval(self.start_x, self.start_y, self.start_x, self.start_y, outline=self.current_color, width=3, tags=("annotation",))
+            ellipse_options = {
+                "outline": self.current_color,
+                "width": 3,
+                "tags": ("annotation",)
+            }
+            if self.fill_rectangles:
+                ellipse_options.update(fill=self.current_color, stipple=self.fill_stipple(self.rectangle_transparency))
+            self.rect = self.drawing_canvas.create_oval(
+                self.start_x, self.start_y, self.start_x, self.start_y,
+                **ellipse_options
+            )
         elif self.mode == "arrow":
             self.rect = self.drawing_canvas.create_line(
                 self.start_x, self.start_y, self.start_x, self.start_y,
@@ -785,11 +875,30 @@ class ScreenshotCapture:
             self.show_text_input(canvas_x, canvas_y)
 
     def drawing(self, event):
+        if self.resize_data:
+            self._resize(event)
+            return
+        if self.drag_data["item"]:
+            item = self.drag_data["item"]
+            if item in self.annotation_items and self.annotation_items[item][0] != "texto":
+                self._drag_move(event)
+            return
         if self.mode in ("rect", "ellipse", "arrow") and self.rect:
             canvas_x, canvas_y = self.canvas_position(event)
             self.drawing_canvas.coords(self.rect, self.start_x, self.start_y, canvas_x, canvas_y)
 
     def end_draw(self, event):
+        if self.resize_data:
+            self._sync_annotation_data(self.resize_data["target"])
+            self.resize_data = None
+            return
+        if self.drag_data["item"]:
+            item = self.drag_data["item"]
+            if item in self.annotation_items:
+                self._sync_annotation_data(item)
+            self.drag_data["item"] = None
+            self._position_resize_handles()
+            return
         if self.mode in ("rect", "ellipse", "arrow") and self.rect:
             x2, y2 = self.canvas_position(event)
             x1, y1 = self.start_x, self.start_y
@@ -802,7 +911,7 @@ class ScreenshotCapture:
             elif self.mode == "ellipse":
                 image_x1, image_y1 = self.image_position(x1, y1)
                 image_x2, image_y2 = self.image_position(x2, y2)
-                self.ellipses.append((min(image_x1, image_x2), min(image_y1, image_y2), abs(image_x2-image_x1), abs(image_y2-image_y1), self.current_color))
+                self.ellipses.append((min(image_x1, image_x2), min(image_y1, image_y2), abs(image_x2-image_x1), abs(image_y2-image_y1), self.current_color, self.fill_rectangles, self.rectangle_transparency))
                 self.annotation_items[self.rect] = ("círculo", len(self.ellipses) - 1)
             else:
                 image_x1, image_y1 = self.image_position(x1, y1)
@@ -828,29 +937,189 @@ class ScreenshotCapture:
             self.drawing_canvas.move(self.drag_data["item"], dx, dy)
             self.drag_data["x"] = canvas_x
             self.drag_data["y"] = canvas_y
+            self._position_resize_handles()
 
     def stop_drag(self, event):
         if self.drag_data["item"]:
-            coords = self.drawing_canvas.coords(self.drag_data["item"])
-            item = self.drag_data["item"]
-            kind, index = self.annotation_items.get(item, (None, None))
-            if kind == "texto":
+            if self.drag_data["item"] in self.annotation_items:
+                self._sync_annotation_data(self.drag_data["item"])
+            self.drag_data["item"] = None
+
+    def _drag_move(self, event):
+        canvas_x, canvas_y = self.canvas_position(event)
+        dx = canvas_x - self.drag_data["x"]
+        dy = canvas_y - self.drag_data["y"]
+        self.drawing_canvas.move(self.drag_data["item"], dx, dy)
+        self.drag_data["x"] = canvas_x
+        self.drag_data["y"] = canvas_y
+        self._position_resize_handles()
+
+    def _sync_annotation_data(self, item):
+        """Vuelve a calcular las coordenadas de la anotación tras moverla o redimensionarla."""
+        entry = self.annotation_items.get(item)
+        if entry is None:
+            return
+        kind, index = entry
+        coords = self.drawing_canvas.coords(item)
+        if kind == "texto":
+            if len(coords) >= 2:
                 _, _, text, color, text_id, size = self.text_entries[index]
                 image_x, image_y = self.image_position(coords[0], coords[1])
                 self.text_entries[index] = (image_x, image_y, text, color, text_id, size)
-            elif kind == "rectángulo":
-                image_x1, image_y1 = self.image_position(coords[0], coords[1])
-                image_x2, image_y2 = self.image_position(coords[2], coords[3])
-                self.rects[index] = (min(image_x1, image_x2), min(image_y1, image_y2), abs(image_x2 - image_x1), abs(image_y2 - image_y1), self.rects[index][4], self.rects[index][5], self.rects[index][6])
-            elif kind == "círculo":
-                image_x1, image_y1 = self.image_position(coords[0], coords[1])
-                image_x2, image_y2 = self.image_position(coords[2], coords[3])
-                self.ellipses[index] = (min(image_x1, image_x2), min(image_y1, image_y2), abs(image_x2 - image_x1), abs(image_y2 - image_y1), self.ellipses[index][4])
-            elif kind == "flecha":
-                image_x1, image_y1 = self.image_position(coords[0], coords[1])
-                image_x2, image_y2 = self.image_position(coords[2], coords[3])
-                self.arrows[index] = (image_x1, image_y1, image_x2, image_y2, self.arrows[index][4])
-            self.drag_data["item"] = None
+        elif kind == "rectángulo":
+            image_x1, image_y1 = self.image_position(coords[0], coords[1])
+            image_x2, image_y2 = self.image_position(coords[2], coords[3])
+            self.rects[index] = (
+                min(image_x1, image_x2), min(image_y1, image_y2),
+                abs(image_x2 - image_x1), abs(image_y2 - image_y1),
+                self.rects[index][4], self.rects[index][5], self.rects[index][6]
+            )
+        elif kind == "círculo":
+            image_x1, image_y1 = self.image_position(coords[0], coords[1])
+            image_x2, image_y2 = self.image_position(coords[2], coords[3])
+            self.ellipses[index] = (
+                min(image_x1, image_x2), min(image_y1, image_y2),
+                abs(image_x2 - image_x1), abs(image_y2 - image_y1),
+                self.ellipses[index][4], self.ellipses[index][5], self.ellipses[index][6]
+            )
+        elif kind == "flecha":
+            image_x1, image_y1 = self.image_position(coords[0], coords[1])
+            image_x2, image_y2 = self.image_position(coords[2], coords[3])
+            self.arrows[index] = (image_x1, image_y1, image_x2, image_y2, self.arrows[index][4])
+
+    def _annotation_bbox(self, item):
+        entry = self.annotation_items.get(item)
+        if entry is None:
+            return None
+        kind = entry[0]
+        if kind == "texto":
+            bbox = self.drawing_canvas.bbox(item)
+            if bbox and len(bbox) == 4:
+                return bbox
+            return None
+        coords = self.drawing_canvas.coords(item)
+        if len(coords) != 4:
+            return None
+        return (min(coords[0], coords[2]), min(coords[1], coords[3]),
+                max(coords[0], coords[2]), max(coords[1], coords[3]))
+
+    def show_resize_handles(self, item):
+        self.clear_resize_handles()
+        if not self.drawing_canvas or item not in self.annotation_items:
+            return
+        bbox = self._annotation_bbox(item)
+        if not bbox:
+            return
+        min_x, min_y, max_x, max_y = bbox
+        kind = self.annotation_items[item][0]
+        if kind == "flecha":
+            coords = self.drawing_canvas.coords(item)
+            roles = ["start", "end"]
+            positions = [(coords[0], coords[1]), (coords[2], coords[3])]
+        elif kind == "texto":
+            roles = ["text"]
+            positions = [(max_x, max_y)]
+        else:
+            roles = ["nw", "ne", "sw", "se"]
+            positions = [(min_x, min_y), (max_x, min_y), (min_x, max_y), (max_x, max_y)]
+        for role, (hx, hy) in zip(roles, positions):
+            handle = self.drawing_canvas.create_rectangle(
+                hx - 4, hy - 4, hx + 4, hy + 4,
+                fill="#ffffff", outline="#2563eb", width=2, tags=("handle",)
+            )
+            self.resize_handles[handle] = {"target": item, "role": role}
+
+    def clear_resize_handles(self):
+        if not self.drawing_canvas:
+            self.resize_handles = {}
+            return
+        for handle in self.resize_handles:
+            try:
+                self.drawing_canvas.delete(handle)
+            except tk.TclError:
+                pass
+        self.resize_handles = {}
+
+    def _position_resize_handles(self):
+        for handle, info in list(self.resize_handles.items()):
+            bbox = self._annotation_bbox(info["target"])
+            if not bbox:
+                continue
+            min_x, min_y, max_x, max_y = bbox
+            role = info["role"]
+            if role == "start":
+                coords = self.drawing_canvas.coords(info["target"])
+                hx, hy = coords[0], coords[1]
+            elif role == "end":
+                coords = self.drawing_canvas.coords(info["target"])
+                hx, hy = coords[2], coords[3]
+            elif role == "text":
+                hx, hy = max_x, max_y
+            elif role == "nw":
+                hx, hy = min_x, min_y
+            elif role == "ne":
+                hx, hy = max_x, min_y
+            elif role == "sw":
+                hx, hy = min_x, max_y
+            else:
+                hx, hy = max_x, max_y
+            self.drawing_canvas.coords(handle, hx - 4, hy - 4, hx + 4, hy + 4)
+
+    def _start_resize(self, handle_id, canvas_x, canvas_y):
+        info = self.resize_handles.get(handle_id)
+        if not info:
+            return
+        target = info["target"]
+        kind, index = self.annotation_items[target]
+        data = {
+            "target": target,
+            "kind": kind,
+            "index": index,
+            "role": info["role"],
+        }
+        if kind == "texto":
+            bbox = self._annotation_bbox(target)
+            data["base_size"] = self.text_entries[index][5]
+            data["base_dist"] = math.hypot(bbox[2] - bbox[0], bbox[3] - bbox[1]) if bbox else 24
+            data["anchor"] = (bbox[0], bbox[1]) if bbox else (canvas_x, canvas_y)
+        self.resize_data = data
+        self.mode_var.set("Arrastrá una manija para redimensionar.")
+
+    def _resize(self, event):
+        data = self.resize_data
+        if not data:
+            return
+        canvas_x, canvas_y = self.canvas_position(event)
+        target = data["target"]
+        if data["kind"] == "texto":
+            anchor_x, anchor_y = data["anchor"]
+            distance = math.hypot(canvas_x - anchor_x, canvas_y - anchor_y)
+            factor = distance / data["base_dist"]
+            new_size = max(8, min(72, round(data["base_size"] * factor)))
+            tx, ty, text, color, text_id, _ = self.text_entries[data["index"]]
+            self.text_entries[data["index"]] = (tx, ty, text, color, text_id, new_size)
+            self.drawing_canvas.itemconfigure(target, font=("Arial", new_size, "bold"))
+            self._position_resize_handles()
+            return
+        min_size = 6
+        coords = list(self.drawing_canvas.coords(target))
+        role = data["role"]
+        if data["kind"] == "flecha":
+            if role == "start":
+                coords[0], coords[1] = canvas_x, canvas_y
+            else:
+                coords[2], coords[3] = canvas_x, canvas_y
+        else:
+            if role in ("nw", "sw"):
+                coords[0] = min(canvas_x, coords[2] - min_size)
+            else:
+                coords[2] = max(canvas_x, coords[0] + min_size)
+            if role in ("nw", "ne"):
+                coords[1] = min(canvas_y, coords[3] - min_size)
+            else:
+                coords[3] = max(canvas_y, coords[1] + min_size)
+        self.drawing_canvas.coords(target, *coords)
+        self._position_resize_handles()
 
     def delete_selected(self):
         item = self.selected_annotation
@@ -872,6 +1141,8 @@ class ScreenshotCapture:
             for item_id, (item_kind, item_index) in self.annotation_items.items()
         }
         self.selected_annotation = None
+        self.clear_resize_handles()
+        self.resize_data = None
         self.mode_var.set("Anotación eliminada.")
 
     def clear_all_annotations(self):
@@ -883,9 +1154,353 @@ class ScreenshotCapture:
         self.ellipses = []
         self.annotation_items = {}
         self.selected_annotation = None
+        self.clear_resize_handles()
+        self.resize_data = None
         self.rect = None
         if hasattr(self, "mode_var"):
             self.mode_var.set("Todas las anotaciones eliminadas.")
+
+    def _templates_path(self):
+        folder = os.path.join(os.path.expanduser("~"), ".screenpar")
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError:
+            pass
+        return os.path.join(folder, "plantillas.json")
+
+    def load_templates(self):
+        path = self._templates_path()
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as template_file:
+                data = json.load(template_file)
+            templates = data.get("templates", []) if isinstance(data, dict) else []
+            return [t for t in templates if isinstance(t, dict)]
+        except Exception:
+            return []
+
+    def save_templates(self, templates):
+        path = self._templates_path()
+        try:
+            with open(path, "w", encoding="utf-8") as template_file:
+                json.dump({"templates": templates}, template_file, ensure_ascii=False, indent=2)
+            return True
+        except Exception as error:
+            messagebox.showerror(
+                "No se pudieron guardar las plantillas",
+                f"Ocurrió un error al guardar la biblioteca de plantillas:\n{error}",
+                parent=self.edit_window
+            )
+            return False
+
+    def _current_template_dict(self):
+        img_w, img_h = self.image.size
+        return {
+            "version": 1,
+            "rects": [
+                {"x": rx / img_w, "y": ry / img_h, "w": rw / img_w, "h": rh / img_h,
+                 "color": color, "filled": filled, "transparency": transparency}
+                for rx, ry, rw, rh, color, filled, transparency in self.rects
+            ],
+            "ellipses": [
+                {"x": ex / img_w, "y": ey / img_h, "w": ew / img_w, "h": eh / img_h,
+                 "color": color, "filled": filled, "transparency": transparency}
+                for ex, ey, ew, eh, color, filled, transparency in self.ellipses
+            ],
+            "arrows": [
+                {"x1": x1 / img_w, "y1": y1 / img_h, "x2": x2 / img_w, "y2": y2 / img_h,
+                 "color": color}
+                for x1, y1, x2, y2, color in self.arrows
+            ],
+            "texts": [
+                {"x": tx / img_w, "y": ty / img_h, "text": text, "color": color, "size": size}
+                for tx, ty, text, color, _text_id, size in self.text_entries
+            ],
+        }
+
+    def save_new_template(self):
+        if not (self.rects or self.ellipses or self.arrows or self.text_entries):
+            self.mode_var.set("No hay anotaciones para guardar como plantilla.")
+            return
+        name = simpledialog.askstring(
+            "Nueva plantilla", "Nombre de la plantilla:", parent=self.edit_window
+        )
+        if not name:
+            return
+        name = name.strip() or f"Plantilla {len(self.templates) + 1}"
+        template = self._current_template_dict()
+        template["name"] = name
+        self.templates = [t for t in self.templates if t.get("name") != name]
+        self.templates.append(template)
+        if self.save_templates(self.templates):
+            self.refresh_template_panel()
+            self.mode_var.set(f"Plantilla '{name}' guardada. Arrastrala a la imagen para usarla.")
+
+    def delete_template(self, template):
+        name = template.get("name", "")
+        if not messagebox.askyesno(
+            "Eliminar plantilla", f"¿Eliminar la plantilla '{name}'?",
+            parent=self.edit_window
+        ):
+            return
+        self.templates = [t for t in self.templates if t is not template]
+        if self.save_templates(self.templates):
+            self.refresh_template_panel()
+            self.mode_var.set(f"Plantilla '{name}' eliminada.")
+
+    def refresh_template_panel(self):
+        for widget in self.template_tiles_frame.winfo_children():
+            widget.destroy()
+        self._template_photos = []
+        if not self.templates:
+            ttk.Label(
+                self.template_tiles_frame, text="(todavía no hay plantillas)",
+                style="Editor.Status.TLabel"
+            ).pack(anchor="w")
+            return
+        for index, template in enumerate(self.templates):
+            thumbnail = self._render_template_thumbnail(template)
+            tile = tk.Frame(
+                self.template_tiles_frame, bg="#3b424b", bd=1, relief="solid",
+                highlightthickness=1, highlightbackground="#56606c", cursor="hand2"
+            )
+            tile.grid(row=index // 2, column=index % 2, padx=2, pady=2, sticky="nsew")
+            label = tk.Label(tile, image=thumbnail, bg="#3b424b", bd=0)
+            label.pack(padx=3, pady=3)
+            self._template_photos.append(thumbnail)
+            close_btn = tk.Button(
+                tile, text="✕", bg="#3b424b", fg="#fecdd3", bd=0,
+                activebackground="#7f2934", activeforeground="#ffffff",
+                font=("Arial", 8, "bold"),
+                command=lambda t=template: self.delete_template(t)
+            )
+            close_btn.place(relx=1.0, x=-4, y=3, anchor="ne")
+            for widget in (tile, label):
+                widget.bind("<ButtonPress-1>", lambda e, t=template: self.start_template_drag(e, t))
+                widget.bind("<B1-Motion>", self.drag_template_tile)
+                widget.bind("<ButtonRelease-1>", lambda e, t=template: self.finish_template_drag(e, t))
+                widget.bind("<Button-3>", lambda e, t=template: self.delete_template(t))
+                widget.bind("<Enter>", lambda e, t=template: self.mode_var.set(
+                    f"Plantilla '{t.get('name', '')}': arrastrala a la imagen o clic y luego clic en la imagen. "
+                    "Clic en la ✕ o clic derecho para eliminar."
+                ))
+
+    def _render_template_thumbnail(self, template, width=72, height=44):
+        thumbnail = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(thumbnail)
+        for shape in template.get("rects", []):
+            x0, y0 = shape["x"] * width, shape["y"] * height
+            x1, y1 = (shape["x"] + shape["w"]) * width, (shape["y"] + shape["h"]) * height
+            color = shape.get("color", "#dc2626")
+            if shape.get("filled"):
+                alpha = round(255 * (100 - shape.get("transparency", 72)) / 100)
+                draw.rectangle([x0, y0, x1, y1], fill=ImageColor.getrgb(color) + (alpha,))
+            draw.rectangle([x0, y0, x1, y1], outline=color, width=2)
+        for shape in template.get("ellipses", []):
+            x0, y0 = shape["x"] * width, shape["y"] * height
+            x1, y1 = (shape["x"] + shape["w"]) * width, (shape["y"] + shape["h"]) * height
+            color = shape.get("color", "#dc2626")
+            if shape.get("filled"):
+                alpha = round(255 * (100 - shape.get("transparency", 72)) / 100)
+                draw.ellipse([x0, y0, x1, y1], fill=ImageColor.getrgb(color) + (alpha,))
+            draw.ellipse([x0, y0, x1, y1], outline=color, width=2)
+        for shape in template.get("arrows", []):
+            ax1, ay1 = shape["x1"] * width, shape["y1"] * height
+            ax2, ay2 = shape["x2"] * width, shape["y2"] * height
+            color = shape.get("color", "#dc2626")
+            draw.line((ax1, ay1, ax2, ay2), fill=color, width=2)
+            angle = math.atan2(ay2 - ay1, ax2 - ax1)
+            arrow_length, spread = 8, math.pi / 6
+            left = (ax2 - arrow_length * math.cos(angle - spread), ay2 - arrow_length * math.sin(angle - spread))
+            right = (ax2 - arrow_length * math.cos(angle + spread), ay2 - arrow_length * math.sin(angle + spread))
+            draw.polygon([(ax2, ay2), left, right], fill=color)
+        for shape in template.get("texts", []):
+            color = shape.get("color", "#dc2626")
+            draw.text((shape["x"] * width, shape["y"] * height), shape.get("text", "T"), fill=color)
+        return ImageTk.PhotoImage(thumbnail)
+
+    def _template_bounds(self, template):
+        min_fx = min_fy = None
+        for shape in template.get("rects", []) + template.get("ellipses", []):
+            min_fx = shape["x"] if min_fx is None else min(min_fx, shape["x"])
+            min_fy = shape["y"] if min_fy is None else min(min_fy, shape["y"])
+        for shape in template.get("arrows", []):
+            fx = min(shape["x1"], shape["x2"])
+            fy = min(shape["y1"], shape["y2"])
+            min_fx = fx if min_fx is None else min(min_fx, fx)
+            min_fy = fy if min_fy is None else min(min_fy, fy)
+        for shape in template.get("texts", []):
+            min_fx = shape["x"] if min_fx is None else min(min_fx, shape["x"])
+            min_fy = shape["y"] if min_fy is None else min(min_fy, shape["y"])
+        if min_fx is None:
+            return None
+        return min_fx, min_fy
+
+    def start_template_drag(self, event, template):
+        self._template_drag = {"template": template, "x": event.x_root, "y": event.y_root, "moved": False}
+
+    def drag_template_tile(self, event):
+        data = self._template_drag
+        if not data:
+            return
+        moved = max(abs(event.x_root - data["x"]), abs(event.y_root - data["y"])) > 6
+        if moved and not data["moved"]:
+            data["moved"] = True
+            self._show_template_ghost(data["template"])
+        if data["moved"]:
+            self._move_template_ghost(event.x_root, event.y_root)
+
+    def finish_template_drag(self, event, template):
+        data = self._template_drag
+        self._template_drag = None
+        self._hide_template_ghost()
+        if not data:
+            return
+        if data["moved"]:
+            image_x, image_y = self._image_coords_at_screen(event.x_root, event.y_root)
+            if image_x is not None:
+                self.place_template(template, image_x, image_y)
+            return
+        self.pending_template = template
+        self.mode_var.set(
+            f"Plantilla '{template.get('name', '')}'. Clic en la imagen para colocarla."
+        )
+
+    def _image_coords_at_screen(self, root_x, root_y):
+        x0 = self.drawing_canvas.winfo_rootx()
+        y0 = self.drawing_canvas.winfo_rooty()
+        width = self.drawing_canvas.winfo_width()
+        height = self.drawing_canvas.winfo_height()
+        if not (x0 <= root_x <= x0 + width and y0 <= root_y <= y0 + height):
+            return None, None
+        canvas_x = self.drawing_canvas.canvasx(root_x - x0)
+        canvas_y = self.drawing_canvas.canvasy(root_y - y0)
+        return self.image_position(canvas_x, canvas_y)
+
+    def _show_template_ghost(self, template):
+        if self._template_ghost is None or not self._template_ghost.winfo_exists():
+            self._template_ghost = tk.Toplevel(self.edit_window)
+            self._template_ghost.overrideredirect(True)
+            self._template_ghost.attributes("-topmost", True)
+            self._template_ghost.configure(background="#000000")
+            self._template_ghost_label = tk.Label(
+                self._template_ghost, bd=0, highlightthickness=1,
+                highlightbackground="#ffffff"
+            )
+            self._template_ghost_label.pack()
+        thumbnail = self._render_template_thumbnail(template)
+        self._template_ghost_label.configure(image=thumbnail)
+        self._template_ghost_label.image = thumbnail
+        self._template_ghost.deiconify()
+        root_x, root_y = self.edit_window.winfo_pointerxy()
+        self._move_template_ghost(root_x, root_y)
+
+    def _move_template_ghost(self, root_x, root_y):
+        if self._template_ghost and self._template_ghost.winfo_exists():
+            width = self._template_ghost.winfo_width()
+            height = self._template_ghost.winfo_height()
+            self._template_ghost.geometry(f"+{root_x - width // 2}+{root_y - height // 2}")
+
+    def _hide_template_ghost(self):
+        if self._template_ghost and self._template_ghost.winfo_exists():
+            self._template_ghost.withdraw()
+
+    def place_template(self, template, anchor_x, anchor_y):
+        img_w, img_h = self.image.size
+        bounds = self._template_bounds(template)
+        if bounds is None:
+            return
+        min_fx, min_fy = bounds
+        offset_x = anchor_x - min_fx * img_w
+        offset_y = anchor_y - min_fy * img_h
+
+        def add_shape(item_kind, x, y, w, h, color, filled, transparency, shape_type):
+            canvas_options = {
+                "outline": color,
+                "width": 3,
+                "tags": ("annotation",)
+            }
+            if filled:
+                canvas_options.update(fill=color, stipple=self.fill_stipple(transparency))
+            if shape_type == "rect":
+                item = self.drawing_canvas.create_rectangle(
+                    x * self.display_scale, y * self.display_scale,
+                    (x + w) * self.display_scale, (y + h) * self.display_scale,
+                    **canvas_options
+                )
+            else:
+                item = self.drawing_canvas.create_oval(
+                    x * self.display_scale, y * self.display_scale,
+                    (x + w) * self.display_scale, (y + h) * self.display_scale,
+                    **canvas_options
+                )
+            collection = self.rects if shape_type == "rect" else self.ellipses
+            self.annotation_items[item] = (item_kind, len(collection) - 1)
+            return item
+
+        count = 0
+        for shape in template.get("rects", []):
+            self.rects.append((
+                shape["x"] * img_w + offset_x,
+                shape["y"] * img_h + offset_y,
+                shape["w"] * img_w,
+                shape["h"] * img_h,
+                shape.get("color", self.current_color),
+                shape.get("filled", self.fill_rectangles),
+                shape.get("transparency", self.rectangle_transparency)
+            ))
+            add_shape("rectángulo", *self.rects[-1], "rect")
+            count += 1
+
+        for shape in template.get("ellipses", []):
+            self.ellipses.append((
+                shape["x"] * img_w + offset_x,
+                shape["y"] * img_h + offset_y,
+                shape["w"] * img_w,
+                shape["h"] * img_h,
+                shape.get("color", self.current_color),
+                shape.get("filled", self.fill_rectangles),
+                shape.get("transparency", self.rectangle_transparency)
+            ))
+            add_shape("círculo", *self.ellipses[-1], "ellipse")
+            count += 1
+
+        for shape in template.get("arrows", []):
+            fx1 = shape["x1"] * img_w + offset_x
+            fy1 = shape["y1"] * img_h + offset_y
+            fx2 = shape["x2"] * img_w + offset_x
+            fy2 = shape["y2"] * img_h + offset_y
+            color = shape.get("color", self.current_color)
+            self.arrows.append((fx1, fy1, fx2, fy2, color))
+            item = self.drawing_canvas.create_line(
+                fx1 * self.display_scale, fy1 * self.display_scale,
+                fx2 * self.display_scale, fy2 * self.display_scale,
+                fill=color, width=3, arrow=tk.LAST, arrowshape=(16, 20, 6),
+                tags=("annotation",)
+            )
+            self.annotation_items[item] = ("flecha", len(self.arrows) - 1)
+            count += 1
+
+        for shape in template.get("texts", []):
+            text, color = shape.get("text", ""), shape.get("color", self.current_color)
+            size = shape.get("size", self.font_size)
+            if not text:
+                continue
+            tx = shape["x"] * img_w + offset_x
+            ty = shape["y"] * img_h + offset_y
+            display_x, display_y = self.display_position(tx, ty)
+            item = self.drawing_canvas.create_text(
+                display_x, display_y, text=text, fill=color,
+                font=("Arial", size, "bold"), tags=("draggable", "annotation"),
+                anchor="nw"
+            )
+            self.text_entries.append((tx, ty, text, color, item, size))
+            self.annotation_items[item] = ("texto", len(self.text_entries) - 1)
+            count += 1
+
+        name = template.get("name", "")
+        self.mode_var.set(f"Plantilla '{name}': {count} anotaciones agregadas.")
 
     def show_text_input(self, x, y, edit_item=None):
         input_win = tk.Toplevel(self.edit_window)
@@ -961,7 +1576,22 @@ class ScreenshotCapture:
             self.mode_var.set(f"Texto actualizado a {size} px.")
 
     def close_editor(self, saved=False):
+        if getattr(self, "_template_ghost", None) is not None:
+            try:
+                if self._template_ghost.winfo_exists():
+                    self._template_ghost.destroy()
+            except tk.TclError:
+                pass
+        self._template_ghost = None
         if self.edit_window and self.edit_window.winfo_exists():
+            try:
+                self.edit_window.unbind_all("<Delete>")
+            except tk.TclError:
+                pass
+            try:
+                self.edit_window.unbind_all("<BackSpace>")
+            except tk.TclError:
+                pass
             self.edit_window.destroy()
         if self.on_closed:
             self.on_closed(saved)
@@ -1006,13 +1636,19 @@ class ScreenshotCapture:
                     [rx, ry, rx + rw, ry + rh],
                     fill=ImageColor.getrgb(color) + (round(255 * (100 - transparency) / 100),)
                 )
+        for ex, ey, ew, eh, color, filled, transparency in self.ellipses:
+            if filled:
+                fill_draw.ellipse(
+                    [ex, ey, ex + ew, ey + eh],
+                    fill=ImageColor.getrgb(color) + (round(255 * (100 - transparency) / 100),)
+                )
         edit_img = Image.alpha_composite(edit_img.convert("RGBA"), fill_layer).convert("RGB")
         draw = ImageDraw.Draw(edit_img)
 
         for rx, ry, rw, rh, color, _filled, _transparency in self.rects:
             draw.rectangle([rx, ry, rx + rw, ry + rh], outline=color, width=3)
 
-        for ex, ey, ew, eh, color in self.ellipses:
+        for ex, ey, ew, eh, color, _filled, _transparency in self.ellipses:
             draw.ellipse([ex, ey, ex + ew, ey + eh], outline=color, width=3)
 
         for x1, y1, x2, y2, color in self.arrows:
