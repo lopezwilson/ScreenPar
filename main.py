@@ -1,12 +1,13 @@
 import pyautogui
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-from PIL import Image, ImageDraw, ImageFont, ImageTk
+from tkinter import colorchooser, filedialog, messagebox, ttk
+from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageTk
 import threading
 import time
 import ctypes
 import sys
 import math
+import io
 from pynput import keyboard, mouse
 
 class FullScreenSelector:
@@ -296,12 +297,16 @@ class ScreenshotCapture:
         self.start_y = None
         self.rect = None
         self.text_entries = []
-        self.current_color = "red"
+        self.current_color = "#dc2626"
+        self.fill_rectangles = False
+        self.rectangle_transparency = 72
         self.font_size = 16
         self.arrows = []
         self.ellipses = []
         self.annotation_items = {}
         self.selected_annotation = None
+        self.display_scale = 1.0
+        self.tool_icons = []
 
     def capture_and_save(self):
         if self.capture_image():
@@ -314,11 +319,53 @@ class ScreenshotCapture:
 
         try:
             self.image = pyautogui.screenshot(region=self.record_region)
+            # Deja la captura disponible para pegarla inmediatamente; si se
+            # agregan anotaciones, save_image actualiza el contenido luego.
+            self.copy_image_to_clipboard(self.image, show_error=False)
             return True
         except Exception as error:
             messagebox.showerror("No se pudo capturar", f"Ocurrió un error al capturar la pantalla:\n{error}", parent=self.parent)
             if self.on_closed:
                 self.on_closed(False)
+            return False
+
+    def copy_image_to_clipboard(self, image=None, show_error=True):
+        """Copia una imagen como bitmap para que Windows permita Ctrl+V."""
+        if sys.platform != "win32":
+            if show_error:
+                messagebox.showinfo(
+                    "Función no disponible",
+                    "Copiar imágenes al portapapeles está disponible en Windows.",
+                    parent=self.edit_window or self.parent
+                )
+            return False
+
+        image = image or self.image
+        if image is None:
+            return False
+
+        try:
+            # pywin32 convierte el BMP al formato CF_DIB que Windows espera.
+            import win32clipboard
+            import win32con
+
+            bitmap = io.BytesIO()
+            image.convert("RGB").save(bitmap, format="BMP")
+            dib_data = bitmap.getvalue()[14:]
+            win32clipboard.OpenClipboard()
+            try:
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardData(win32con.CF_DIB, dib_data)
+            finally:
+                win32clipboard.CloseClipboard()
+            return True
+        except Exception as error:
+            if show_error:
+                messagebox.showerror(
+                    "No se pudo copiar",
+                    f"Ocurrió un error al copiar la imagen al portapapeles:\n{error}",
+                    parent=self.edit_window or self.parent
+                )
             return False
 
     def reset_annotations(self):
@@ -372,16 +419,17 @@ class ScreenshotCapture:
         self.reset_annotations()
         self.edit_window = tk.Toplevel(self.parent)
         self.edit_window.title("Editor de Captura")
+        self.edit_window.resizable(True, True)
         editor_colors = {
-            "background": "#eef2f7",
-            "surface": "#ffffff",
-            "navy": "#0f172a",
-            "muted": "#64748b",
-            "border": "#dbe3ee",
-            "blue": "#2563eb",
-            "blue_active": "#1d4ed8",
-            "red": "#dc2626",
-            "red_active": "#b91c1c"
+            "background": "#2f343b",
+            "surface": "#3b424b",
+            "navy": "#f1f5f9",
+            "muted": "#b8c1cc",
+            "border": "#56606c",
+            "blue": "#3678e8",
+            "blue_active": "#4b8cf5",
+            "red": "#b9414b",
+            "red_active": "#d0525d"
         }
         editor_style = ttk.Style(self.edit_window)
         editor_style.configure("Editor.TFrame", background=editor_colors["background"])
@@ -390,15 +438,18 @@ class ScreenshotCapture:
         editor_style.configure("Editor.Subtitle.TLabel", background=editor_colors["background"], foreground=editor_colors["muted"], font=("Arial", 9))
         editor_style.configure("Editor.Toolbar.TLabel", background=editor_colors["surface"], foreground=editor_colors["muted"], font=("Arial", 9, "bold"))
         editor_style.configure("Editor.Tool.TButton", padding=(10, 7), font=("Arial", 9), background=editor_colors["surface"], foreground=editor_colors["navy"])
-        editor_style.map("Editor.Tool.TButton", background=[("active", "#e8eef8")])
-        editor_style.configure("Editor.Save.TButton", padding=(10, 7), font=("Arial", 9, "bold"), background=editor_colors["blue"], foreground="white")
+        editor_style.map("Editor.Tool.TButton", background=[("active", "#4b5561")])
+        editor_style.configure("Editor.Save.TButton", padding=(10, 7), font=("Arial", 9, "bold"), background=editor_colors["blue"], foreground="#ffffff")
         editor_style.map("Editor.Save.TButton", background=[("active", editor_colors["blue_active"])])
-        editor_style.configure("Editor.Danger.TButton", padding=(10, 7), font=("Arial", 9), background="#fee2e2", foreground=editor_colors["red"])
-        editor_style.map("Editor.Danger.TButton", background=[("active", "#fecaca")])
+        editor_style.configure("Editor.Clipboard.TButton", padding=(10, 7), font=("Arial", 9, "bold"), background="#17633f", foreground="#dcfce7")
+        editor_style.map("Editor.Clipboard.TButton", background=[("active", "#218052")])
+        editor_style.configure("Editor.Danger.TButton", padding=(10, 7), font=("Arial", 9), background="#7f2934", foreground="#fee2e2")
+        editor_style.map("Editor.Danger.TButton", background=[("active", "#a33643")])
         editor_style.configure("Editor.Status.TLabel", background=editor_colors["surface"], foreground=editor_colors["muted"], font=("Arial", 9, "italic"))
+        editor_style.configure("Editor.TCombobox", fieldbackground=editor_colors["surface"], background=editor_colors["surface"], foreground=editor_colors["navy"], arrowcolor=editor_colors["navy"])
+        editor_style.configure("Editor.TSpinbox", fieldbackground=editor_colors["surface"], background=editor_colors["surface"], foreground=editor_colors["navy"], arrowcolor=editor_colors["navy"])
+        editor_style.configure("Editor.TCheckbutton", background=editor_colors["surface"], foreground=editor_colors["navy"], font=("Arial", 9))
         self.edit_window.configure(background=editor_colors["background"])
-        if self.parent:
-            self.edit_window.transient(self.parent)
         self.edit_window.protocol("WM_DELETE_WINDOW", self.close_editor)
         
         img_width, img_height = self.image.size
@@ -406,6 +457,9 @@ class ScreenshotCapture:
         screen_height = self.edit_window.winfo_screenheight()
         viewport_width = max(400, min(img_width, int(screen_width * 0.82)))
         viewport_height = max(250, min(img_height, int(screen_height * 0.58)))
+        self.display_scale = min(1.0, viewport_width / img_width, viewport_height / img_height)
+        display_width = max(1, round(img_width * self.display_scale))
+        display_height = max(1, round(img_height * self.display_scale))
         window_width = min(screen_width - 40, viewport_width + 58)
         window_height = min(screen_height - 60, viewport_height + 280)
         window_x = max(0, (screen_width - window_width) // 2)
@@ -415,12 +469,6 @@ class ScreenshotCapture:
         
         header = ttk.Frame(self.edit_window, style="Editor.TFrame", padding=(18, 14, 18, 4))
         header.pack(fill="x")
-        self.maximize_var = tk.StringVar(value="Maximizar")
-        ttk.Button(
-            header, textvariable=self.maximize_var,
-            command=self.toggle_editor_maximize,
-            style="Editor.Tool.TButton"
-        ).pack(side="right", anchor="n")
         ttk.Label(header, text="Editar captura", style="Editor.Header.TLabel").pack(anchor="w")
         ttk.Label(
             header,
@@ -436,62 +484,89 @@ class ScreenshotCapture:
         )
         help_label.pack(fill="x", padx=18, pady=(0, 8))
 
-        btn_frame = ttk.Frame(self.edit_window, style="Editor.Toolbar.TFrame", padding=(12, 10))
-        btn_frame.pack(fill="x", padx=18, pady=(0, 8))
+        workspace = ttk.Frame(self.edit_window, style="Editor.TFrame")
+        workspace.pack(fill="both", expand=True, padx=18, pady=(0, 14))
+
+        btn_frame = ttk.Frame(workspace, style="Editor.Toolbar.TFrame", padding=(12, 10), width=190)
+        btn_frame.pack(side="left", fill="y", padx=(0, 10))
+        btn_frame.pack_propagate(False)
+        ttk.Label(btn_frame, text="HERRAMIENTAS", style="Editor.Toolbar.TLabel").pack(anchor="w", pady=(0, 10))
         
         color_frame = ttk.Frame(btn_frame, style="Editor.Toolbar.TFrame")
         color_frame.pack(fill="x", pady=(0, 6))
         
-        ttk.Label(color_frame, text="COLOR DE ANOTACIÓN", style="Editor.Toolbar.TLabel").pack(side="left")
-        self.color_var = tk.StringVar(value="red")
-        color_combo = ttk.Combobox(color_frame, textvariable=self.color_var, values=["red", "blue", "green", "black", "yellow"], state="readonly", width=10)
-        color_combo.pack(side="left", padx=5)
-        color_combo.bind("<<ComboboxSelected>>", lambda e: setattr(self, 'current_color', self.color_var.get()))
-        ttk.Label(color_frame, text="TAMAÑO", style="Editor.Toolbar.TLabel").pack(side="left", padx=(18, 4))
+        ttk.Label(color_frame, text="COLOR DE ANOTACIÓN", style="Editor.Toolbar.TLabel").pack(anchor="w")
+        self.editor_border = editor_colors["border"]
+        self.editor_accent = editor_colors["blue"]
+        self.current_color = "#dc2626"
+        self.create_color_palette(color_frame)
+        ttk.Label(color_frame, text="TAMAÑO DEL TEXTO", style="Editor.Toolbar.TLabel").pack(anchor="w")
         self.font_size_var = tk.StringVar(value="16")
         font_size_combo = ttk.Spinbox(
             color_frame, from_=8, to=72, increment=2,
             textvariable=self.font_size_var, width=5,
-            command=self.apply_font_size
+            command=self.apply_font_size, style="Editor.TSpinbox"
         )
-        font_size_combo.pack(side="left")
+        font_size_combo.pack(anchor="w", pady=(4, 0))
         font_size_combo.bind("<Return>", lambda event: self.apply_font_size())
         font_size_combo.bind("<FocusOut>", lambda event: self.apply_font_size())
+        self.fill_rect_var = tk.BooleanVar(value=self.fill_rectangles)
+        ttk.Checkbutton(
+            color_frame, text="Rellenar rectángulos",
+            variable=self.fill_rect_var, style="Editor.TCheckbutton",
+            command=lambda: setattr(self, "fill_rectangles", self.fill_rect_var.get())
+        ).pack(anchor="w", pady=(10, 0))
+        ttk.Label(color_frame, text="TRANSPARENCIA DEL FONDO", style="Editor.Toolbar.TLabel").pack(anchor="w", pady=(12, 0))
+        self.transparency_var = tk.DoubleVar(value=self.rectangle_transparency)
+        transparency_frame = ttk.Frame(color_frame, style="Editor.Toolbar.TFrame")
+        transparency_frame.pack(fill="x", pady=(4, 0))
+        ttk.Scale(
+            transparency_frame, from_=0, to=100, orient="horizontal",
+            variable=self.transparency_var, command=self.set_rectangle_transparency,
+            style="Editor.Horizontal.TScale"
+        ).pack(side="left", fill="x", expand=True)
+        self.transparency_value_var = tk.StringVar(value=f"{self.rectangle_transparency}%")
+        ttk.Label(
+            transparency_frame, textvariable=self.transparency_value_var,
+            style="Editor.Toolbar.TLabel", width=4, anchor="e"
+        ).pack(side="right", padx=(6, 0))
         
         tools_frame = ttk.Frame(btn_frame, style="Editor.Toolbar.TFrame")
         tools_frame.pack(fill="x")
-        for column in range(5):
-            tools_frame.columnconfigure(column, weight=1)
 
-        rect_btn = ttk.Button(tools_frame, text="⬜ Rectángulo", command=self.enable_rectangle_mode, style="Editor.Tool.TButton")
-        rect_btn.grid(row=0, column=0, padx=2, sticky="ew")
+        rect_btn = self.create_tool_button(tools_frame, "Rectángulo", "rectangle", self.enable_rectangle_mode)
+        rect_btn.pack(fill="x", pady=2)
 
-        ellipse_btn = ttk.Button(tools_frame, text="◯ Círculo", command=self.enable_ellipse_mode, style="Editor.Tool.TButton")
-        ellipse_btn.grid(row=0, column=1, padx=2, sticky="ew")
+        ellipse_btn = self.create_tool_button(tools_frame, "Círculo", "ellipse", self.enable_ellipse_mode)
+        ellipse_btn.pack(fill="x", pady=2)
 
-        arrow_btn = ttk.Button(tools_frame, text="➜ Flecha", command=self.enable_arrow_mode, style="Editor.Tool.TButton")
-        arrow_btn.grid(row=0, column=2, padx=2, sticky="ew")
-        
-        text_btn = ttk.Button(tools_frame, text="📝 Texto", command=self.enable_text_mode, style="Editor.Tool.TButton")
-        text_btn.grid(row=0, column=3, padx=2, sticky="ew")
-        
-        edit_btn = ttk.Button(tools_frame, text="Editar texto", command=self.edit_selected, style="Editor.Tool.TButton")
-        edit_btn.grid(row=0, column=4, padx=2, sticky="ew")
-        delete_btn = ttk.Button(tools_frame, text="Eliminar", command=self.delete_selected, style="Editor.Danger.TButton")
-        delete_btn.grid(row=1, column=3, padx=2, pady=(4, 0), sticky="ew")
-        save_btn = ttk.Button(tools_frame, text="💾 Guardar", command=self.save_image, style="Editor.Save.TButton")
-        save_btn.grid(row=1, column=4, padx=2, pady=(4, 0), sticky="ew")
+        arrow_btn = self.create_tool_button(tools_frame, "Flecha", "arrow", self.enable_arrow_mode)
+        arrow_btn.pack(fill="x", pady=2)
+
+        text_btn = self.create_tool_button(tools_frame, "Texto", "text", self.enable_text_mode)
+        text_btn.pack(fill="x", pady=2)
+
+        edit_btn = self.create_tool_button(tools_frame, "Editar texto", "edit", self.edit_selected)
+        edit_btn.pack(fill="x", pady=2)
+        delete_btn = self.create_tool_button(tools_frame, "Eliminar", "delete", self.delete_selected, "Editor.Danger.TButton")
+        delete_btn.pack(fill="x", pady=(12, 2))
+        clear_btn = self.create_tool_button(tools_frame, "Limpiar todo", "clear", self.clear_all_annotations, "Editor.Danger.TButton")
+        clear_btn.pack(fill="x", pady=2)
+        clipboard_btn = self.create_tool_button(tools_frame, "Copiar imagen", "clipboard", self.copy_edited_image, "Editor.Clipboard.TButton")
+        clipboard_btn.pack(fill="x", pady=2)
+        save_btn = self.create_tool_button(tools_frame, "Guardar", "save", self.save_image, "Editor.Save.TButton")
+        save_btn.pack(fill="x", pady=2)
 
         self.mode_var = tk.StringVar()
-        ttk.Label(self.edit_window, textvariable=self.mode_var, anchor="w", style="Editor.Status.TLabel").pack(fill="x", padx=18, pady=(0, 8))
+        ttk.Label(btn_frame, textvariable=self.mode_var, anchor="w", wraplength=160, style="Editor.Status.TLabel").pack(fill="x", pady=(12, 0))
 
-        canvas_frame = ttk.Frame(self.edit_window, style="Editor.Toolbar.TFrame", padding=8)
-        canvas_frame.pack(padx=18, pady=(0, 14))
+        canvas_frame = ttk.Frame(workspace, style="Editor.Toolbar.TFrame", padding=8)
+        canvas_frame.pack(side="left", fill="both", expand=True)
         
         canvas_frame.grid_rowconfigure(0, weight=1)
         canvas_frame.grid_columnconfigure(0, weight=1)
         self.drawing_canvas = tk.Canvas(
-            canvas_frame, width=viewport_width, height=viewport_height,
+            canvas_frame, width=min(viewport_width, display_width), height=min(viewport_height, display_height),
             background="white", highlightthickness=1,
             highlightbackground=editor_colors["border"],
             xscrollincrement=1, yscrollincrement=1
@@ -501,13 +576,15 @@ class ScreenshotCapture:
         self.drawing_canvas.configure(
             xscrollcommand=horizontal_scroll.set,
             yscrollcommand=vertical_scroll.set,
-            scrollregion=(0, 0, img_width, img_height)
+            scrollregion=(0, 0, display_width, display_height)
         )
         self.drawing_canvas.grid(row=0, column=0, sticky="nsew")
         vertical_scroll.grid(row=0, column=1, sticky="ns")
         horizontal_scroll.grid(row=1, column=0, sticky="ew")
         
-        self.photo = ImageTk.PhotoImage(self.image)
+        preview = self.image.resize((display_width, display_height), Image.Resampling.LANCZOS) \
+            if self.display_scale < 1.0 else self.image
+        self.photo = ImageTk.PhotoImage(preview)
         self.drawing_canvas.create_image(0, 0, anchor="nw", image=self.photo)
         
         self.drawing_canvas.bind("<ButtonPress-1>", self.start_draw)
@@ -523,21 +600,118 @@ class ScreenshotCapture:
         self.enable_rectangle_mode()
         self.edit_window.bind("<Control-s>", lambda event: self.save_image())
 
-    def toggle_editor_maximize(self):
-        if not self.edit_window or not self.edit_window.winfo_exists():
-            return
-        try:
-            is_maximized = self.edit_window.state() == "zoomed"
-            self.edit_window.state("normal" if is_maximized else "zoomed")
-            self.maximize_var.set("Maximizar" if is_maximized else "Restaurar")
-        except tk.TclError:
-            self.edit_window.attributes("-zoomed", True)
-            self.maximize_var.set("Restaurar")
+    def create_tool_button(self, parent, text, icon_name, command, style="Editor.Tool.TButton"):
+        icon = Image.new("RGBA", (20, 20), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(icon)
+        ink = "#d8e0ea"
+
+        if icon_name == "rectangle":
+            draw.rectangle((3, 4, 17, 16), outline=ink, width=2)
+        elif icon_name == "ellipse":
+            draw.ellipse((3, 4, 17, 16), outline=ink, width=2)
+        elif icon_name == "arrow":
+            draw.line((3, 16, 15, 4), fill=ink, width=2)
+            draw.polygon((10, 4, 17, 3, 16, 10), fill=ink)
+        elif icon_name == "text":
+            draw.line((3, 4, 17, 4), fill=ink, width=2)
+            draw.line((10, 4, 10, 17), fill=ink, width=2)
+            draw.line((6, 17, 14, 17), fill=ink, width=2)
+        elif icon_name == "edit":
+            draw.line((4, 16, 15, 5), fill=ink, width=3)
+            draw.polygon((13, 3, 17, 7, 16, 9, 12, 5), fill=ink)
+            draw.line((3, 17, 7, 16), fill=ink, width=2)
+        elif icon_name == "delete":
+            draw.rectangle((5, 6, 15, 17), outline="#fecdd3", width=2)
+            draw.line((4, 4, 16, 4), fill="#fecdd3", width=2)
+            draw.line((8, 2, 12, 2), fill="#fecdd3", width=2)
+            draw.line((8, 9, 8, 15), fill="#fecdd3", width=1)
+            draw.line((12, 9, 12, 15), fill="#fecdd3", width=1)
+        elif icon_name == "clear":
+            draw.polygon([(5, 6), (13, 6), (13, 12), (5, 12)], outline="#fecdd3", width=2)
+            draw.polygon([(6, 12), (12, 12), (11, 16), (7, 16)], fill="#fecdd3")
+        elif icon_name == "clipboard":
+            draw.rectangle((5, 4, 15, 18), outline="#bbf7d0", width=2)
+            draw.rectangle((8, 2, 12, 6), fill="#bbf7d0")
+            draw.line((8, 10, 12, 10), fill="#bbf7d0", width=1)
+            draw.line((8, 14, 12, 14), fill="#bbf7d0", width=1)
+        elif icon_name == "save":
+            draw.rectangle((3, 3, 17, 17), outline="white", width=2)
+            draw.rectangle((6, 4, 14, 9), outline="white", width=1)
+            draw.rectangle((7, 12, 13, 16), outline="white", width=1)
+
+        image = ImageTk.PhotoImage(icon)
+        self.tool_icons.append(image)
+        return ttk.Button(parent, text=text, image=image, compound="left", command=command, style=style)
 
     def enable_rectangle_mode(self):
         self.mode = "rect"
         if hasattr(self, "mode_var"):
             self.mode_var.set("Herramienta activa: rectángulo. Arrastra sobre la imagen.")
+
+    def set_rectangle_transparency(self, value):
+        self.rectangle_transparency = round(float(value))
+        if hasattr(self, "transparency_value_var"):
+            self.transparency_value_var.set(f"{self.rectangle_transparency}%")
+
+    def create_color_palette(self, parent):
+        """Paleta de muestras de color + selector nativo de color."""
+        self.palette_colors = [
+            "#dc2626", "#2563eb", "#16a34a", "#facc15", "#0f172a",
+            "#f1f5f9", "#a855f7", "#f97316"
+        ]
+        self.swatch_buttons = {}
+        self.palette_grid = ttk.Frame(parent, style="Editor.Toolbar.TFrame")
+        self.palette_grid.pack(fill="x", pady=(4, 6))
+        for column in range(5):
+            self.palette_grid.grid_columnconfigure(column, weight=1, uniform="swatch")
+        for index, color in enumerate(self.palette_colors):
+            self.add_swatch(index, color)
+        ttk.Button(
+            parent, text="Más colores…", style="Editor.Tool.TButton",
+            command=self.pick_custom_color
+        ).pack(fill="x", pady=(0, 10))
+        self.set_current_color("#dc2626")
+
+    def add_swatch(self, index, color):
+        frame = tk.Frame(
+            self.palette_grid, bg="#3b424b", bd=0,
+            highlightthickness=2, highlightbackground=self.editor_border
+        )
+        frame.grid(row=index // 5, column=index % 5, padx=2, pady=2, ipadx=1, ipady=1, sticky="nsew")
+        tk.Button(
+            frame, bg=color, activebackground=color, bd=0, relief="flat",
+            width=2, height=1, cursor="hand2",
+            command=lambda selected=color: self.set_current_color(selected)
+        ).pack(fill="both", expand=True, padx=1, pady=1)
+        self.swatch_buttons[color] = frame
+
+    def set_current_color(self, color):
+        self.current_color = color
+        self.show_color_palette()
+
+    def show_color_palette(self):
+        if not hasattr(self, "swatch_buttons"):
+            return
+        for color, frame in self.swatch_buttons.items():
+            selected = color.lower() == self.current_color.lower()
+            frame.configure(
+                highlightbackground=self.editor_accent if selected else self.editor_border,
+                highlightthickness=2 if selected else 1
+            )
+
+    def pick_custom_color(self):
+        rgb, hex_color = colorchooser.askcolor(
+            color=self.current_color, title="Elegir color",
+            parent=self.edit_window
+        )
+        if hex_color is None:
+            return
+        hex_color = hex_color.lower()
+        if hex_color not in self.swatch_buttons:
+            self.palette_colors.append(hex_color)
+            self.add_swatch(len(self.palette_colors) - 1, hex_color)
+        self.set_current_color(hex_color)
+        self.mode_var.set(f"Color aplicado: {hex_color}")
 
     def select_annotation(self, item):
         if item in self.annotation_items:
@@ -565,6 +739,12 @@ class ScreenshotCapture:
     def canvas_position(self, event):
         return self.drawing_canvas.canvasx(event.x), self.drawing_canvas.canvasy(event.y)
 
+    def image_position(self, x, y):
+        return x / self.display_scale, y / self.display_scale
+
+    def display_position(self, x, y):
+        return x * self.display_scale, y * self.display_scale
+
     def start_draw(self, event):
         canvas_x, canvas_y = self.canvas_position(event)
         current_item = self.drawing_canvas.find_withtag("current")
@@ -577,7 +757,22 @@ class ScreenshotCapture:
 
         self.start_x, self.start_y = canvas_x, canvas_y
         if self.mode == "rect":
-            self.rect = self.drawing_canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline=self.current_color, width=3, tags=("annotation",))
+            rectangle_options = {
+                "outline": self.current_color,
+                "width": 3,
+                "tags": ("annotation",)
+            }
+            if self.fill_rectangles:
+                stipple = "gray12" if self.rectangle_transparency >= 75 else "gray25"
+                if self.rectangle_transparency < 50:
+                    stipple = "gray50"
+                if self.rectangle_transparency < 25:
+                    stipple = "gray75"
+                rectangle_options.update(fill=self.current_color, stipple=stipple)
+            self.rect = self.drawing_canvas.create_rectangle(
+                self.start_x, self.start_y, self.start_x, self.start_y,
+                **rectangle_options
+            )
         elif self.mode == "ellipse":
             self.rect = self.drawing_canvas.create_oval(self.start_x, self.start_y, self.start_x, self.start_y, outline=self.current_color, width=3, tags=("annotation",))
         elif self.mode == "arrow":
@@ -599,13 +794,20 @@ class ScreenshotCapture:
             x2, y2 = self.canvas_position(event)
             x1, y1 = self.start_x, self.start_y
             if self.mode == "rect":
-                self.rects.append((min(x1, x2), min(y1, y2), abs(x2-x1), abs(y2-y1), self.current_color))
+                fill = self.fill_rectangles
+                image_x1, image_y1 = self.image_position(x1, y1)
+                image_x2, image_y2 = self.image_position(x2, y2)
+                self.rects.append((min(image_x1, image_x2), min(image_y1, image_y2), abs(image_x2-image_x1), abs(image_y2-image_y1), self.current_color, fill, self.rectangle_transparency))
                 self.annotation_items[self.rect] = ("rectángulo", len(self.rects) - 1)
             elif self.mode == "ellipse":
-                self.ellipses.append((min(x1, x2), min(y1, y2), abs(x2-x1), abs(y2-y1), self.current_color))
+                image_x1, image_y1 = self.image_position(x1, y1)
+                image_x2, image_y2 = self.image_position(x2, y2)
+                self.ellipses.append((min(image_x1, image_x2), min(image_y1, image_y2), abs(image_x2-image_x1), abs(image_y2-image_y1), self.current_color))
                 self.annotation_items[self.rect] = ("círculo", len(self.ellipses) - 1)
             else:
-                self.arrows.append((x1, y1, x2, y2, self.current_color))
+                image_x1, image_y1 = self.image_position(x1, y1)
+                image_x2, image_y2 = self.image_position(x2, y2)
+                self.arrows.append((image_x1, image_y1, image_x2, image_y2, self.current_color))
                 self.annotation_items[self.rect] = ("flecha", len(self.arrows) - 1)
             self.rect = None
 
@@ -634,13 +836,20 @@ class ScreenshotCapture:
             kind, index = self.annotation_items.get(item, (None, None))
             if kind == "texto":
                 _, _, text, color, text_id, size = self.text_entries[index]
-                self.text_entries[index] = (coords[0], coords[1], text, color, text_id, size)
+                image_x, image_y = self.image_position(coords[0], coords[1])
+                self.text_entries[index] = (image_x, image_y, text, color, text_id, size)
             elif kind == "rectángulo":
-                self.rects[index] = (min(coords[0], coords[2]), min(coords[1], coords[3]), abs(coords[2] - coords[0]), abs(coords[3] - coords[1]), self.rects[index][4])
+                image_x1, image_y1 = self.image_position(coords[0], coords[1])
+                image_x2, image_y2 = self.image_position(coords[2], coords[3])
+                self.rects[index] = (min(image_x1, image_x2), min(image_y1, image_y2), abs(image_x2 - image_x1), abs(image_y2 - image_y1), self.rects[index][4], self.rects[index][5], self.rects[index][6])
             elif kind == "círculo":
-                self.ellipses[index] = (min(coords[0], coords[2]), min(coords[1], coords[3]), abs(coords[2] - coords[0]), abs(coords[3] - coords[1]), self.ellipses[index][4])
+                image_x1, image_y1 = self.image_position(coords[0], coords[1])
+                image_x2, image_y2 = self.image_position(coords[2], coords[3])
+                self.ellipses[index] = (min(image_x1, image_x2), min(image_y1, image_y2), abs(image_x2 - image_x1), abs(image_y2 - image_y1), self.ellipses[index][4])
             elif kind == "flecha":
-                self.arrows[index] = (coords[0], coords[1], coords[2], coords[3], self.arrows[index][4])
+                image_x1, image_y1 = self.image_position(coords[0], coords[1])
+                image_x2, image_y2 = self.image_position(coords[2], coords[3])
+                self.arrows[index] = (image_x1, image_y1, image_x2, image_y2, self.arrows[index][4])
             self.drag_data["item"] = None
 
     def delete_selected(self):
@@ -665,6 +874,19 @@ class ScreenshotCapture:
         self.selected_annotation = None
         self.mode_var.set("Anotación eliminada.")
 
+    def clear_all_annotations(self):
+        for item in list(self.annotation_items):
+            self.drawing_canvas.delete(item)
+        self.rects = []
+        self.text_entries = []
+        self.arrows = []
+        self.ellipses = []
+        self.annotation_items = {}
+        self.selected_annotation = None
+        self.rect = None
+        if hasattr(self, "mode_var"):
+            self.mode_var.set("Todas las anotaciones eliminadas.")
+
     def show_text_input(self, x, y, edit_item=None):
         input_win = tk.Toplevel(self.edit_window)
         input_win.title("Agregar Texto")
@@ -688,12 +910,14 @@ class ScreenshotCapture:
                     self.drawing_canvas.itemconfigure(edit_item, text=text)
                     self.text_entries[index] = (x, y, text, color, text_id, size)
                 else:
+                    image_x, image_y = self.image_position(x, y)
+                    display_x, display_y = self.display_position(image_x, image_y)
                     text_id = self.drawing_canvas.create_text(
-                        x, y, text=text, fill=self.current_color,
+                        display_x, display_y, text=text, fill=self.current_color,
                         font=("Arial", self.font_size, "bold"), tags=("draggable", "annotation"),
                         anchor="nw"
                     )
-                    self.text_entries.append((x, y, text, self.current_color, text_id, self.font_size))
+                    self.text_entries.append((image_x, image_y, text, self.current_color, text_id, self.font_size))
                     self.annotation_items[text_id] = ("texto", len(self.text_entries) - 1)
             input_win.destroy()
 
@@ -743,20 +967,7 @@ class ScreenshotCapture:
             self.on_closed(saved)
 
     def save_image(self):
-        edit_img = self.image.copy()
-        draw = ImageDraw.Draw(edit_img)
-        
-        for rx, ry, rw, rh, color in self.rects:
-            draw.rectangle([rx, ry, rx + rw, ry + rh], outline=color, width=3)
-
-        for ex, ey, ew, eh, color in self.ellipses:
-            draw.ellipse([ex, ey, ex + ew, ey + eh], outline=color, width=3)
-
-        for x1, y1, x2, y2, color in self.arrows:
-            self.draw_arrow(draw, x1, y1, x2, y2, color)
-        
-        for tx, ty, text, color, text_id, size in self.text_entries:
-            draw.text((tx, ty), text, fill=color, font=self.get_text_font(size))
+        edit_img = self.render_edited_image()
         
         file_path = filedialog.asksaveasfilename(
             parent=self.edit_window,
@@ -777,7 +988,40 @@ class ScreenshotCapture:
             except Exception as error:
                 messagebox.showerror("No se pudo guardar", f"Ocurrió un error al guardar la imagen:\n{error}", parent=self.edit_window)
                 return
+            self.copy_image_to_clipboard(edit_img)
             self.close_editor(saved=True)
+
+    def copy_edited_image(self):
+        if self.copy_image_to_clipboard(self.render_edited_image()):
+            self.mode_var.set("Imagen copiada. Ahora podés pegarla con Ctrl + V.")
+
+    def render_edited_image(self):
+        edit_img = self.image.copy()
+
+        fill_layer = Image.new("RGBA", edit_img.size, (0, 0, 0, 0))
+        fill_draw = ImageDraw.Draw(fill_layer)
+        for rx, ry, rw, rh, color, filled, transparency in self.rects:
+            if filled:
+                fill_draw.rectangle(
+                    [rx, ry, rx + rw, ry + rh],
+                    fill=ImageColor.getrgb(color) + (round(255 * (100 - transparency) / 100),)
+                )
+        edit_img = Image.alpha_composite(edit_img.convert("RGBA"), fill_layer).convert("RGB")
+        draw = ImageDraw.Draw(edit_img)
+
+        for rx, ry, rw, rh, color, _filled, _transparency in self.rects:
+            draw.rectangle([rx, ry, rx + rw, ry + rh], outline=color, width=3)
+
+        for ex, ey, ew, eh, color in self.ellipses:
+            draw.ellipse([ex, ey, ex + ew, ey + eh], outline=color, width=3)
+
+        for x1, y1, x2, y2, color in self.arrows:
+            self.draw_arrow(draw, x1, y1, x2, y2, color)
+
+        for tx, ty, text, color, text_id, size in self.text_entries:
+            draw.text((tx, ty), text, fill=color, font=self.get_text_font(size))
+
+        return edit_img
 
     def get_text_font(self, size):
         try:
